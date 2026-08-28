@@ -58,11 +58,14 @@ Base.metadata.create_all(engine)
 app = FastAPI(title="VEXDOU Downloader", version="1.0.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
+# Liiska boggaga la taageerayo (oo ay ku jiraan YouTube, TikTok, Instagram, Facebook, iwm.)
 ALLOWED_HOSTS = {
-    "tiktok.com", "www.tiktok.com", "vm.tiktok.com",
+    "youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com",
+    "tiktok.com", "www.tiktok.com", "vm.tiktok.com", "m.tiktok.com",
     "instagram.com", "www.instagram.com",
-    "facebook.com", "www.facebook.com", "fb.watch", "fb.me",
+    "facebook.com", "www.facebook.com", "fb.watch", "fb.me", "m.facebook.com",
     "pinterest.com", "www.pinterest.com", "pin.it",
+    "twitter.com", "www.twitter.com", "x.com", "www.x.com",
 }
 
 class DownloadRequest(BaseModel):
@@ -96,7 +99,6 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
 
         outtmpl = str(DOWNLOAD_DIR / f"{job_id}.%(ext)s")
         
-        # Options-ka oo laga saaray impersonate si uusan server-ka u dumin
         options = {
             "outtmpl": outtmpl,
             "noplaylist": True,
@@ -135,7 +137,11 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
         db.commit()
     except Exception as exc:
         item.status = "failed"
-        item.error = str(exc)[:500]
+        err_msg = str(exc)
+        if "Instagram" in err_msg or "login required" in err_msg:
+            item.error = "Instagram wuu xannibay server-ka. Fadlan isku day YouTube ama TikTok."
+        else:
+            item.error = "Cillad ayaa dhacday ama link-ga waa mid gaar ah."
         db.commit()
         for p in DOWNLOAD_DIR.glob(f"{job_id}.*"):
             try:
@@ -160,7 +166,7 @@ def create_download(payload: DownloadRequest, background_tasks: BackgroundTasks,
     if kind not in {"video", "audio"}:
         raise HTTPException(400, "Invalid download type.")
     if not host_allowed(url):
-        raise HTTPException(400, "Boggan waxaa laga taageeraa oo kaliya TikTok, Instagram, Facebook, iyo Pinterest.")
+        raise HTTPException(400, "Boggan waxaa laga taageeraa oo kaliya YouTube, TikTok, Instagram, Facebook, Pinterest, iyo X.")
 
     visitor_id = vexdou_visitor or uuid.uuid4().hex
     job_id = uuid.uuid4().hex
@@ -254,6 +260,7 @@ def get_file(job_id: str, vexdou_visitor: str | None = Cookie(default=None)):
     if not vexdou_visitor:
         raise HTTPException(404, "File not found.")
 
+    db.source = None # type: ignore
     db = SessionLocal()
     item = db.scalar(select(Download).where(
         Download.job_id == job_id,
