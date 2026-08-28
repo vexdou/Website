@@ -6,6 +6,11 @@
   <meta name="theme-color" content="#07070b">
   <meta name="description" content="Fast, clean and anonymous media downloader.">
   <title>VEXDOU — Downloader</title>
+  
+  <!-- PWA Manifest & Theme -->
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#07070b">
+
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -85,6 +90,15 @@
     <span>VEXDOU Downloader</span>
     <span>Built for fast public-media downloads</span>
   </footer>
+
+  <!-- Service Worker Registration -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js')
+        .then(() => console.log('Service Worker Registered'))
+        .catch((err) => console.log('Service Worker Failed', err));
+    }
+  </script>
 
   <script src="/static/app.js"></script>
 </body>
