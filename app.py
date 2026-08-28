@@ -93,8 +93,8 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
     try:
         if not item:
             return
-        
-        # Haddii link-ga uu yahay Instagram, si toos ah u soo celi fariintaada
+
+        # Hubinta Instagram
         if "instagram.com" in url.lower():
             raise RuntimeError("Instagram Wili Laguma Darin appkeena")
 
@@ -114,11 +114,11 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
             "format": "best",
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["ios", "web"]
+                    "player_client": ["android", "web"]
                 }
             },
             "http_headers": {
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.5",
             }
@@ -149,8 +149,10 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
         err_msg = str(exc)
         if "Instagram Wili Laguma Darin appkeena" in err_msg or "instagram" in url.lower():
             item.error = "Instagram Wili Laguma Darin appkeena"
+        elif "Sign in to confirm" in err_msg or "bot" in err_msg.lower() or "youtube" in url.lower():
+            item.error = "YouTube wuxuu xannibay server-ka. Fadlan isku day TikTok ama Facebook."
         else:
-            item.error = f"Cillad ayaa dhacday ama link-ga waa mid gaar ah."
+            item.error = "Cillad ayaa dhacday ama link-ga waa mid gaar ah."
         db.commit()
         for p in DOWNLOAD_DIR.glob(f"{job_id}.*"):
             try:
@@ -287,7 +289,7 @@ def get_file(job_id: str, vexdou_visitor: str | None = Cookie(default=None)):
     return FileResponse(path, filename=f"{safe_name(item.title)}.{path.suffix.lstrip('.')}")
 
 @app.delete("/api/history")
-def clear_history(vexdou_visitor: str | None = Cookie(default=None)):
+def clear_history(vexdou_visitor: str | None: Cookie(default=None)):
     if not vexdou_visitor:
         return {"ok": True}
 
