@@ -30,9 +30,15 @@ function escapeHtml(value) {
 
 function timeAgo(iso) {
   if (!iso) return "";
-  const date = new Date(iso);
+  // Xalinta dhibaatada wakhtiga (Timezone correction)
+  let isoFormatted = iso;
+  if (isoFormatted && !isoFormatted.endsWith('Z') && !isoFormatted.includes('+') && !isoFormatted.includes('-', 10)) {
+    isoFormatted += 'Z';
+  }
+  
+  const date = new Date(isoFormatted);
   const now = new Date();
-  const diffSeconds = Math.floor((now - date) / 1000);
+  const diffSeconds = Math.max(0, Math.floor((now - date) / 1000));
 
   if (diffSeconds < 60) {
     return "Now";
