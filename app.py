@@ -46,6 +46,7 @@ class Download(Base):
     visitor_id: Mapped[str] = mapped_column(String(128), index=True)
     url: Mapped[str] = mapped_column(Text)
     title: Mapped[str] = mapped_column(Text, default="Media")
+    thumbnail: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="queued")
     kind: Mapped[str] = mapped_column(String(20), default="video")
     filename: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -57,7 +58,6 @@ Base.metadata.create_all(engine)
 app = FastAPI(title="VEXDOU Downloader", version="1.0.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
-# YouTube waa laga saaray, waxaa la reebay oo kaliya TikTok, Instagram, Facebook, iyo Pinterest
 ALLOWED_HOSTS = {
     "tiktok.com", "www.tiktok.com", "vm.tiktok.com",
     "instagram.com", "www.instagram.com",
@@ -95,8 +95,6 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
         db.commit()
 
         outtmpl = str(DOWNLOAD_DIR / f"{job_id}.%(ext)s")
-        
-        # Format "best" waxay si fiican ugu shaqaysaa TikTok, IG, FB, iyo Pinterest iyadoon khaladaad keenin
         options = {
             "outtmpl": outtmpl,
             "noplaylist": True,
@@ -118,6 +116,7 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=True)
             item.title = safe_name(info.get("title") or info.get("description") or "Media")
+            item.thumbnail = info.get("thumbnail") # Halkan ayuu ka qaadayaa sawirka video-ga
 
         output = find_output(job_id)
         if not output:
@@ -212,6 +211,8 @@ def download_status(job_id: str, vexdou_visitor: str | None = Cookie(default=Non
         "title": item.title,
         "kind": item.kind,
         "error": item.error,
+        "thumbnail": item.thumbnail,
+        "url": item.url,
         "download_url": f"/api/file/{item.job_id}" if item.status == "completed" else None,
     }
 
@@ -233,6 +234,8 @@ def history(vexdou_visitor: str | None = Cookie(default=None)):
         "title": x.title,
         "status": x.status,
         "kind": x.kind,
+        "thumbnail": x.thumbnail,
+        "url": x.url,
         "created_at": x.created_at.isoformat() if x.created_at else None,
         "download_url": f"/api/file/{x.job_id}" if x.status == "completed" else None,
     } for x in items]
@@ -278,4 +281,3 @@ def clear_history(vexdou_visitor: str | None = Cookie(default=None)):
     db.commit()
     db.close()
     return {"ok": True}
-
