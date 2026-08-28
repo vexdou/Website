@@ -1,130 +1,886 @@
 <!doctype html>
+
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#07070b">
-  <meta name="description" content="Fast, clean and anonymous media downloader.">
-  <title>VEXDOU — Downloader</title>
-  
-  <!-- PWA Manifest & Theme -->
-  <link rel="manifest" href="/manifest.json">
-  <meta name="theme-color" content="#07070b">
+  <meta charset="utf-8"><meta
+name="viewport"
+content="width=device-width, initial-scale=1, viewport-fit=cover"
 
-  <link rel="stylesheet" href="/static/styles.css">
-</head>
-<body>
-  <div class="noise"></div>
+«»
+
+  <meta name="theme-color" content="#07070b"><meta
+name="description"
+content="Fast, clean and anonymous media downloader."
+
+«»
+
+  <!-- PWA -->  <link rel="manifest" href="/manifest.json">  <!-- Android / Chrome -->  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="application-name" content="VEXDOU">  <!-- iOS -->  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="VEXDOU">  <title>VEXDOU — Downloader</title>  <link rel="stylesheet" href="/static/styles.css">
+</head><body>  <div class="noise"></div>
   <div class="orb orb-a"></div>
-  <div class="orb orb-b"></div>
+  <div class="orb orb-b"></div>  <!-- ================= NAVIGATION ================= -->  <header class="nav wrap"><a class="brand" href="/">
+  <span class="brand-mark">V</span>
+  <span>VEXDOU</span>
+</a>
 
-  <header class="nav wrap">
-    <a class="brand" href="/">
-      <span class="brand-mark">V</span>
-      <span>VEXDOU</span>
-    </a>
-    <button class="history-btn" id="historyBtn">History <span id="historyCount">0</span></button>
-  </header>
+<button
+  class="history-btn"
+  id="historyBtn"
+  type="button"
+>
+  History
+  <span id="historyCount">0</span>
+</button>
 
-  <main>
-    <section class="hero wrap">
-      <div class="eyebrow"><span></span> SIMPLE · FAST · PRIVATE</div>
-      <h1>Download the web.<br><em>Beautifully.</em></h1>
-      <p class="hero-copy">Paste a public video link and get your media in a few moments. No account. No signup.</p>
+  </header>  <!-- ================= MAIN ================= -->  <main><!-- HERO -->
 
-      <div class="downloader-card" style="background: rgba(18, 22, 31, 0.65); backdrop-filter: blur(25px); -webkit-backdrop-filter: blur(25px); border: 1px solid rgba(255, 255, 255, 0.08); box-shadow: 0 25px 50px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.1);">
-        <div class="input-row">
-          <div class="input-shell" style="background: rgba(10, 12, 16, 0.6); border: 1px solid rgba(255, 255, 255, 0.06); backdrop-filter: blur(10px);">
-            <span class="link-icon">↗</span>
-            <input id="urlInput" type="url" autocomplete="off" placeholder="Paste a TikTok, Facebook, X link…" />
-            <button id="clearBtn" class="clear" hidden>×</button>
-          </div>
-          <select id="kind" style="background: rgba(10, 12, 16, 0.6); border: 1px solid rgba(255, 255, 255, 0.06); color: #fff; backdrop-filter: blur(10px);">
-            <option value="video">Video</option>
-            <option value="audio">MP3</option>
-          </select>
-          <button id="downloadBtn" class="download-btn" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); box-shadow: 0 4px 20px rgba(16, 185, 129, 0.4);"><span>Download</span><b>→</b></button>
-        </div>
-        <div class="supported">
-          <span>Supports</span>
-          <span>TikTok</span><i>•</i><span>Facebook</span><i>•</i><span>Pinterest</span><i>•</i><span>X</span>
-        </div>
-      </div>
+<section class="hero wrap">
 
-      <div id="status" class="status" aria-live="polite"></div>
-
-      <!-- Active Video Preview Card -->
-      <div id="previewCard" class="preview-card" style="display:none; margin-top: 24px; background: rgba(18, 22, 31, 0.75); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 20px; padding: 18px; backdrop-filter: blur(25px); -webkit-backdrop-filter: blur(25px); box-shadow: 0 20px 40px rgba(0,0,0,0.4); text-align: left;">
-        <video id="videoPreview" controls playsinline style="width: 100%; max-height: 380px; border-radius: 12px; background: #000;"></video>
-        <div id="previewMeta" style="margin-top: 12px;"></div>
-      </div>
-    </section>
-
-    <section class="features wrap">
-      <article style="background: rgba(18, 22, 31, 0.4); border: 1px solid rgba(255, 255, 255, 0.06); backdrop-filter: blur(15px); border-radius: 18px;"><div class="feature-icon">01</div><h3>No account</h3><p>Your history is tied to this browser, so there is no signup flow.</p></article>
-      <article style="background: rgba(18, 22, 31, 0.4); border: 1px solid rgba(255, 255, 255, 0.06); backdrop-filter: blur(15px); border-radius: 18px;"><div class="feature-icon">02</div><h3>Direct processing</h3><p>The downloader runs on its own backend instead of relying on another downloader API.</p></article>
-      <article style="background: rgba(18, 22, 31, 0.4); border: 1px solid rgba(255, 255, 255, 0.06); backdrop-filter: blur(15px); border-radius: 18px;"><div class="feature-icon">03</div><h3>Clean by default</h3><p>Temporary files are designed to be removed so storage does not grow forever.</p></article>
-    </section>
-
-    <section id="historySection" class="history wrap">
-      <div class="section-head">
-        <div><div class="eyebrow"><span></span> YOUR BROWSER</div><h2>Recent downloads</h2></div>
-        <button id="clearHistory" class="ghost">Clear history</button>
-      </div>
-      <div id="historyList" class="history-list">
-        <div class="empty">Your downloads will appear here.</div>
-      </div>
-    </section>
-  </main>
-
-  <!-- Video Player Modal for History Playback -->
-  <div id="playerModal" class="modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(7, 7, 11, 0.85); backdrop-filter: blur(15px); z-index:1000; align-items:center; justify-content:center; padding:20px;">
-    <div class="modal-content" style="background:rgba(18, 22, 31, 0.85); border:1px solid rgba(255, 255, 255, 0.1); padding:24px; border-radius:24px; max-width:500px; width:100%; position:relative; backdrop-filter: blur(25px); box-shadow: 0 25px 60px rgba(0,0,0,0.6);">
-      <button id="closeModal" class="close-modal" style="position:absolute; top:14px; right:14px; background:rgba(255,255,255,0.08); border:none; color:#fff; width:32px; height:32px; border-radius:50%; font-size:18px; cursor:pointer; display:flex; align-items:center; justify-content:center;">×</button>
-      <video id="modalVideo" controls playsinline style="width:100%; border-radius:14px; background:#000; margin-top:10px;"></video>
-      <h3 id="modalTitle" style="color:#fff; font-size:14px; margin-top:14px; word-break:break-all;"></h3>
-    </div>
+  <div class="eyebrow">
+    <span></span>
+    SIMPLE · FAST · PRIVATE
   </div>
 
-  <!-- Badhanka Install-ka ee soo baxaya marka app-ka la soo dejisan karo -->
-  <button id="installAppBtn" style="display:none; position: fixed; bottom: 20px; right: 20px; z-index: 9999; background: linear-gradient(135deg, #10b981, #059669); color: #fff; border: none; padding: 12px 20px; border-radius: 30px; font-weight: bold; box-shadow: 0 4px 20px rgba(16,185,129,0.4); cursor: pointer; align-items: center; gap: 8px;">
-    📲 Install App
+  <h1>
+    Download the web.<br>
+    <em>Beautifully.</em>
+  </h1>
+
+  <p class="hero-copy">
+    Paste a public video link and get your media in a few moments.
+    No account. No signup.
+  </p>
+
+
+  <!-- DOWNLOADER -->
+
+  <div
+    class="downloader-card"
+    style="
+      background: rgba(18, 22, 31, 0.65);
+      backdrop-filter: blur(25px);
+      -webkit-backdrop-filter: blur(25px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow:
+        0 25px 50px rgba(0,0,0,0.5),
+        inset 0 1px 0 rgba(255,255,255,0.1);
+    "
+  >
+
+    <div class="input-row">
+
+      <div
+        class="input-shell"
+        style="
+          background: rgba(10, 12, 16, 0.6);
+          border: 1px solid rgba(255, 255, 255, 0.06);
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+        "
+      >
+
+        <span class="link-icon">↗</span>
+
+        <input
+          id="urlInput"
+          type="url"
+          autocomplete="off"
+          inputmode="url"
+          placeholder="Paste a TikTok, Facebook, X link…"
+          aria-label="Video URL"
+        >
+
+        <button
+          id="clearBtn"
+          class="clear"
+          type="button"
+          hidden
+          aria-label="Clear URL"
+        >
+          ×
+        </button>
+
+      </div>
+
+
+      <select
+        id="kind"
+        aria-label="Download type"
+        style="
+          background: rgba(10, 12, 16, 0.6);
+          border: 1px solid rgba(255, 255, 255, 0.06);
+          color: #fff;
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+        "
+      >
+
+        <option value="video">
+          Video
+        </option>
+
+        <option value="audio">
+          MP3
+        </option>
+
+      </select>
+
+
+      <button
+        id="downloadBtn"
+        class="download-btn"
+        type="button"
+        style="
+          background:
+            linear-gradient(
+              135deg,
+              #10b981 0%,
+              #059669 100%
+            );
+          box-shadow:
+            0 4px 20px rgba(16, 185, 129, 0.4);
+        "
+      >
+
+        <span>Download</span>
+        <b>→</b>
+
+      </button>
+
+    </div>
+
+
+    <div class="supported">
+
+      <span>Supports</span>
+
+      <span>TikTok</span>
+      <i>•</i>
+
+      <span>Facebook</span>
+      <i>•</i>
+
+      <span>Pinterest</span>
+      <i>•</i>
+
+      <span>X</span>
+
+    </div>
+
+  </div>
+
+
+  <!-- STATUS -->
+
+  <div
+    id="status"
+    class="status"
+    aria-live="polite"
+  ></div>
+
+
+  <!-- VIDEO PREVIEW -->
+
+  <div
+    id="previewCard"
+    class="preview-card"
+    style="
+      display: none;
+      margin-top: 24px;
+      background: rgba(18, 22, 31, 0.75);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 20px;
+      padding: 18px;
+      backdrop-filter: blur(25px);
+      -webkit-backdrop-filter: blur(25px);
+      box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+      text-align: left;
+    "
+  >
+
+    <video
+      id="videoPreview"
+      controls
+      playsinline
+      preload="metadata"
+      style="
+        width: 100%;
+        max-height: 380px;
+        border-radius: 12px;
+        background: #000;
+      "
+    ></video>
+
+    <div
+      id="previewMeta"
+      style="margin-top: 12px;"
+    ></div>
+
+  </div>
+
+</section>
+
+
+<!-- ================= FEATURES ================= -->
+
+<section class="features wrap">
+
+  <article
+    style="
+      background: rgba(18, 22, 31, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      backdrop-filter: blur(15px);
+      -webkit-backdrop-filter: blur(15px);
+      border-radius: 18px;
+    "
+  >
+
+    <div class="feature-icon">
+      01
+    </div>
+
+    <h3>
+      No account
+    </h3>
+
+    <p>
+      Your history is tied to this browser,
+      so there is no signup flow.
+    </p>
+
+  </article>
+
+
+  <article
+    style="
+      background: rgba(18, 22, 31, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      backdrop-filter: blur(15px);
+      -webkit-backdrop-filter: blur(15px);
+      border-radius: 18px;
+    "
+  >
+
+    <div class="feature-icon">
+      02
+    </div>
+
+    <h3>
+      Direct processing
+    </h3>
+
+    <p>
+      The downloader runs on its own backend
+      instead of relying on another downloader API.
+    </p>
+
+  </article>
+
+
+  <article
+    style="
+      background: rgba(18, 22, 31, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      backdrop-filter: blur(15px);
+      -webkit-backdrop-filter: blur(15px);
+      border-radius: 18px;
+    "
+  >
+
+    <div class="feature-icon">
+      03
+    </div>
+
+    <h3>
+      Clean by default
+    </h3>
+
+    <p>
+      Temporary files are designed to be removed
+      so storage does not grow forever.
+    </p>
+
+  </article>
+
+</section>
+
+
+<!-- ================= HISTORY ================= -->
+
+<section
+  id="historySection"
+  class="history wrap"
+>
+
+  <div class="section-head">
+
+    <div>
+
+      <div class="eyebrow">
+        <span></span>
+        YOUR BROWSER
+      </div>
+
+      <h2>
+        Recent downloads
+      </h2>
+
+    </div>
+
+    <button
+      id="clearHistory"
+      class="ghost"
+      type="button"
+    >
+      Clear history
+    </button>
+
+  </div>
+
+
+  <div
+    id="historyList"
+    class="history-list"
+  >
+
+    <div class="empty">
+      Your downloads will appear here.
+    </div>
+
+  </div>
+
+</section>
+
+  </main>  <!-- ================= VIDEO MODAL ================= -->  <div
+    id="playerModal"
+    class="modal"
+    style="
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(7, 7, 11, 0.85);
+      backdrop-filter: blur(15px);
+      -webkit-backdrop-filter: blur(15px);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    "
+  ><div
+  class="modal-content"
+  style="
+    background: rgba(18, 22, 31, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 24px;
+    border-radius: 24px;
+    max-width: 500px;
+    width: 100%;
+    position: relative;
+    backdrop-filter: blur(25px);
+    -webkit-backdrop-filter: blur(25px);
+    box-shadow: 0 25px 60px rgba(0,0,0,0.6);
+  "
+>
+
+  <button
+    id="closeModal"
+    class="close-modal"
+    type="button"
+    aria-label="Close video"
+    style="
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      background: rgba(255,255,255,0.08);
+      border: none;
+      color: #fff;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      font-size: 18px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    "
+  >
+    ×
   </button>
 
-  <footer class="wrap footer">
-    <span>VEXDOU Downloader</span>
-    <span>Built for fast public-media downloads</span>
-  </footer>
 
-  <!-- Service Worker & PWA Install Logic -->
-  <script>
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js')
-        .then(() => console.log('Service Worker Registered'))
-        .catch((err) => console.log('Service Worker Failed', err));
-    }
+  <video
+    id="modalVideo"
+    controls
+    playsinline
+    preload="metadata"
+    style="
+      width: 100%;
+      border-radius: 14px;
+      background: #000;
+      margin-top: 10px;
+    "
+  ></video>
 
-    let deferredPrompt;
-    window.addEventListener('beforeinstallprompt', (e) => {
-      e.preventDefault();
-      deferredPrompt = e;
-      const installBtn = document.getElementById('installAppBtn');
-      if (installBtn) installBtn.style.display = 'flex';
-    });
 
-    document.getElementById('installAppBtn')?.addEventListener('click', async () => {
-      if (deferredPrompt) {
-        deferredPrompt.prompt();
-        const { outcome } = await deferredPrompt.userChoice;
-        if (outcome === 'accepted') {
-          console.log('User accepted the install prompt');
-        }
-        deferredPrompt = null;
-        document.getElementById('installAppBtn').style.display = 'none';
+  <h3
+    id="modalTitle"
+    style="
+      color: #fff;
+      font-size: 14px;
+      margin-top: 14px;
+      word-break: break-all;
+    "
+  ></h3>
+
+</div>
+
+  </div>  <!-- ================= INSTALL APP BUTTON ================= --><button
+id="installAppBtn"
+type="button"
+hidden
+aria-label="Install VEXDOU App"
+style="
+display: none;
+position: fixed;
+bottom: calc(20px + env(safe-area-inset-bottom));
+right: 20px;
+z-index: 9999;
+
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+
+  padding: 13px 20px;
+
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 999px;
+
+  background:
+    linear-gradient(
+      135deg,
+      #10b981 0%,
+      #059669 100%
+    );
+
+  color: #fff;
+
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 800;
+
+  box-shadow:
+    0 8px 30px rgba(16,185,129,0.35);
+
+  cursor: pointer;
+
+  -webkit-tap-highlight-color: transparent;
+
+  transition:
+    transform .2s ease,
+    box-shadow .2s ease,
+    opacity .2s ease;
+"
+
+«»
+
+<span
+  aria-hidden="true"
+  style="font-size:17px;"
+>
+  📲
+</span>
+
+<span>
+  Install App
+</span>
+
+  </button>  <!-- ================= FOOTER ================= -->  <footer class="wrap footer"><span>
+  VEXDOU Downloader
+</span>
+
+<span>
+  Built for fast public-media downloads
+</span>
+
+  </footer>  <!-- ================= PWA INSTALL SYSTEM ================= -->  <script>
+    (() => {
+
+      "use strict";
+
+
+      /*
+       * ============================================
+       * VEXDOU PWA INSTALL SYSTEM
+       * Android Chrome optimized
+       * ============================================
+       */
+
+      let deferredPrompt = null;
+
+      const installBtn =
+        document.getElementById("installAppBtn");
+
+
+      /*
+       * Check if the website is already
+       * running as an installed PWA.
+       */
+
+      function isAppInstalled() {
+
+        return (
+          window.matchMedia(
+            "(display-mode: standalone)"
+          ).matches ||
+
+          window.matchMedia(
+            "(display-mode: fullscreen)"
+          ).matches ||
+
+          window.navigator.standalone === true
+        );
+
       }
-    });
-  </script>
 
-  <script src="/static/app.js"></script>
-</body>
+
+      /*
+       * Hide Install button
+       */
+
+      function hideInstallButton() {
+
+        if (!installBtn) return;
+
+        installBtn.hidden = true;
+        installBtn.style.display = "none";
+
+      }
+
+
+      /*
+       * Show Install button
+       */
+
+      function showInstallButton() {
+
+        if (!installBtn) return;
+
+        if (
+          deferredPrompt &&
+          !isAppInstalled()
+        ) {
+
+          installBtn.hidden = false;
+          installBtn.style.display = "flex";
+
+        }
+
+      }
+
+
+      /*
+       * Initial state
+       */
+
+      if (isAppInstalled()) {
+
+        hideInstallButton();
+
+      } else {
+
+        hideInstallButton();
+
+      }
+
+
+      /*
+       * ============================================
+       * SERVICE WORKER
+       * ============================================
+       */
+
+      if ("serviceWorker" in navigator) {
+
+        window.addEventListener(
+          "load",
+          () => {
+
+            navigator.serviceWorker
+              .register(
+                "/sw.js",
+                {
+                  scope: "/"
+                }
+              )
+
+              .then(
+                registration => {
+
+                  console.log(
+                    "VEXDOU Service Worker registered:",
+                    registration.scope
+                  );
+
+                }
+              )
+
+              .catch(
+                error => {
+
+                  console.error(
+                    "VEXDOU Service Worker registration failed:",
+                    error
+                  );
+
+                }
+              );
+
+          }
+        );
+
+      }
+
+
+      /*
+       * ============================================
+       * CHROME ANDROID INSTALL PROMPT
+       * ============================================
+       *
+       * Chrome fires this event when the website
+       * meets its installability requirements.
+       */
+
+      window.addEventListener(
+        "beforeinstallprompt",
+        event => {
+
+          console.log(
+            "VEXDOU can be installed"
+          );
+
+          /*
+           * Prevent Chrome from showing
+           * its automatic mini-infobar.
+           */
+
+          event.preventDefault();
+
+
+          /*
+           * Save the event so our own
+           * Install App button can trigger it.
+           */
+
+          deferredPrompt = event;
+
+
+          /*
+           * Display custom Install button.
+           */
+
+          showInstallButton();
+
+        }
+      );
+
+
+      /*
+       * ============================================
+       * INSTALL BUTTON
+       * ============================================
+       */
+
+      if (installBtn) {
+
+        installBtn.addEventListener(
+          "click",
+          async () => {
+
+            /*
+             * No install prompt available.
+             */
+
+            if (!deferredPrompt) {
+
+              console.log(
+                "Install prompt is not available yet."
+              );
+
+              return;
+
+            }
+
+
+            /*
+             * Prevent multiple clicks.
+             */
+
+            installBtn.disabled = true;
+
+            installBtn.style.opacity = "0.7";
+
+
+            try {
+
+              /*
+               * Open Android Chrome install dialog.
+               */
+
+              await deferredPrompt.prompt();
+
+
+              /*
+               * Wait for user's decision.
+               */
+
+              const choice =
+                await deferredPrompt.userChoice;
+
+
+              console.log(
+                "VEXDOU install result:",
+                choice.outcome
+              );
+
+
+            } catch (error) {
+
+              console.error(
+                "VEXDOU install error:",
+                error
+              );
+
+            }
+
+
+            /*
+             * Prompt can only be used once.
+             */
+
+            deferredPrompt = null;
+
+
+            /*
+             * Reset button.
+             */
+
+            installBtn.disabled = false;
+            installBtn.style.opacity = "1";
+
+
+            /*
+             * Hide after prompt.
+             */
+
+            hideInstallButton();
+
+          }
+        );
+
+      }
+
+
+      /*
+       * ============================================
+       * APP INSTALLED
+       * ============================================
+       */
+
+      window.addEventListener(
+        "appinstalled",
+        () => {
+
+          console.log(
+            "VEXDOU was installed successfully."
+          );
+
+
+          deferredPrompt = null;
+
+          hideInstallButton();
+
+        }
+      );
+
+
+      /*
+       * ============================================
+       * DISPLAY MODE CHANGE
+       * ============================================
+       */
+
+      const standaloneMedia =
+        window.matchMedia(
+          "(display-mode: standalone)"
+        );
+
+
+      function handleDisplayModeChange() {
+
+        if (isAppInstalled()) {
+
+          hideInstallButton();
+
+        } else {
+
+          showInstallButton();
+
+        }
+
+      }
+
+
+      if (
+        standaloneMedia.addEventListener
+      ) {
+
+        standaloneMedia.addEventListener(
+          "change",
+          handleDisplayModeChange
+        );
+
+      } else if (
+        standaloneMedia.addListener
+      ) {
+
+        standaloneMedia.addListener(
+          handleDisplayModeChange
+        );
+
+      }
+
+
+      /*
+       * ============================================
+       * PAGE VISIBILITY
+       * ============================================
+       *
+       * Useful when user installs the app and
+       * returns to the browser.
+       */
+
+      document.addEventListener(
+        "visibilitychange",
+        () => {
+
+          if (
+            document.visibilityState === "visible" &&
+            isAppInstalled()
+          ) {
+
+            hideInstallButton();
+
+          }
+
+        }
+      );
+
+
+    })();
+  </script>  <!-- ================= MAIN APP JS ================= -->  <script src="/static/app.js"></script></body>
 </html>
