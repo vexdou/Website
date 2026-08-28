@@ -93,6 +93,11 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
     try:
         if not item:
             return
+        
+        # Haddii link-ga uu yahay Instagram, si toos ah u soo celi fariintaada
+        if "instagram.com" in url.lower():
+            raise RuntimeError("Instagram Wili Laguma Darin appkeena")
+
         item.status = "downloading"
         db.commit()
 
@@ -109,20 +114,15 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
             "format": "best",
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["android", "web"]
+                    "player_client": ["ios", "web"]
                 }
             },
             "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.5",
             }
         }
-
-        # Haddii faylka cookies.txt uu ka dhex muuqdo server-ka, si otomaatig ah ayuu Instagram u furayaa
-        cookie_path = BASE_DIR / "cookies.txt"
-        if cookie_path.exists():
-            options["cookiefile"] = str(cookie_path)
 
         if kind == "audio":
             options["postprocessors"] = [{
@@ -147,10 +147,10 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
     except Exception as exc:
         item.status = "failed"
         err_msg = str(exc)
-        if "Instagram" in err_msg or "login required" in err_msg or "rate-limit" in err_msg:
-            item.error = "Instagram wuxuu dalbanayaa login (cookies.txt). Fadlan isticmaal YouTube ama TikTok."
+        if "Instagram Wili Laguma Darin appkeena" in err_msg or "instagram" in url.lower():
+            item.error = "Instagram Wili Laguma Darin appkeena"
         else:
-            item.error = f"Cillad: {err_msg[:200]}"
+            item.error = f"Cillad ayaa dhacday ama link-ga waa mid gaar ah."
         db.commit()
         for p in DOWNLOAD_DIR.glob(f"{job_id}.*"):
             try:
@@ -175,7 +175,7 @@ def create_download(payload: DownloadRequest, background_tasks: BackgroundTasks,
     if kind not in {"video", "audio"}:
         raise HTTPException(400, "Invalid download type.")
     if not host_allowed(url):
-        raise HTTPException(400, "Boggan waxaa laga taageeraa YouTube, TikTok, Instagram, Facebook, Pinterest, iyo X.")
+        raise HTTPException(400, "Boggan waxaa laga taageeraa YouTube, TikTok, Facebook, Pinterest, iyo X.")
 
     visitor_id = vexdou_visitor or uuid.uuid4().hex
     job_id = uuid.uuid4().hex
