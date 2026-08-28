@@ -61,7 +61,7 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 ALLOWED_HOSTS = {
     "youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com",
     "tiktok.com", "www.tiktok.com", "vm.tiktok.com", "m.tiktok.com",
-    "instagram.com", "www.instagram.com",
+    "instagram.com", "www.instagram.com", "instagr.am", "www.instagr.am",
     "facebook.com", "www.facebook.com", "fb.watch", "fb.me", "m.facebook.com",
     "pinterest.com", "www.pinterest.com", "pin.it",
     "twitter.com", "www.twitter.com", "x.com", "www.x.com",
@@ -94,9 +94,6 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
         if not item:
             return
 
-        if "instagram.com" in url.lower():
-            raise RuntimeError("Instagram Wili Laguma Darin appkeena")
-
         item.status = "downloading"
         db.commit()
 
@@ -108,16 +105,16 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
             "quiet": True,
             "no_warnings": True,
             "restrictfilenames": True,
-            "retries": 3,
+            "retries": 5,
             "socket_timeout": 30,
             "format": "best",
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["android", "web"]
+                    "player_client": ["android", "ios", "web"]
                 }
             },
             "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.5",
             }
@@ -146,12 +143,10 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
     except Exception as exc:
         item.status = "failed"
         err_msg = str(exc)
-        if "Instagram Wili Laguma Darin appkeena" in err_msg or "instagram" in url.lower():
-            item.error = "Instagram Wili Laguma Darin appkeena"
-        elif "Sign in to confirm" in err_msg or "bot" in err_msg.lower() or "youtube" in url.lower():
-            item.error = "YouTube wuxuu xannibay server-ka. Fadlan isku day TikTok ama Facebook."
+        if "Sign in to confirm" in err_msg or "bot" in err_msg.lower():
+            item.error = "YouTube wuxuu xannibay server-ka ku meel gaarka ah. Fadlan isku day markale."
         else:
-            item.error = "Cillad ayaa dhacday ama link-ga waa mid gaار ah."
+            item.error = f"Cillad: {err_msg[:100]}"
         db.commit()
         for p in DOWNLOAD_DIR.glob(f"{job_id}.*"):
             try:
@@ -165,14 +160,16 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
 def home():
     return FileResponse(BASE_DIR / "templates" / "index.html")
 
-# Routing-ka loogu talagalay PWA Manifest iyo Service Worker
+# Routing-ka loogu talagalay PWA Manifest iyo Service Worker oo leh Service-Worker-Allowed header
 @app.get("/manifest.json")
 def serve_manifest():
     return FileResponse(BASE_DIR / "manifest.json", media_type="application/json")
 
 @app.get("/sw.js")
 def serve_sw():
-    return FileResponse(BASE_DIR / "sw.js", media_type="application/javascript")
+    response = FileResponse(BASE_DIR / "sw.js", media_type="application/javascript")
+    response.headers["Service-Worker-Allowed"] = "/"
+    return response
 
 @app.get("/api/health")
 def health():
@@ -185,7 +182,7 @@ def create_download(payload: DownloadRequest, background_tasks: BackgroundTasks,
     if kind not in {"video", "audio"}:
         raise HTTPException(400, "Invalid download type.")
     if not host_allowed(url):
-        raise HTTPException(400, "Boggan waxaa laga taageeraa YouTube, TikTok, Facebook, Pinterest, iyo X.")
+        raise HTTPException(400, "Boggan waxaa laga taageeraa YouTube, TikTok, Instagram, Facebook, Pinterest, iyo X.")
 
     visitor_id = vexdou_visitor or uuid.uuid4().hex
     job_id = uuid.uuid4().hex
