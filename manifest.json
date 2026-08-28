@@ -1,20 +1,25 @@
 {
   "name": "VEXDOU Downloader",
   "short_name": "VEXDOU",
+  "description": "Fast, clean and private media downloader.",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#07070b",
   "theme_color": "#07070b",
+  "orientation": "portrait-primary",
   "icons": [
     {
       "src": "/static/icon.png",
       "sizes": "192x192",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any maskable"
     },
     {
       "src": "/static/icon.png",
       "sizes": "512x512",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any maskable"
     }
   ]
 }
