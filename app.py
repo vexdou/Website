@@ -57,14 +57,12 @@ Base.metadata.create_all(engine)
 app = FastAPI(title="VEXDOU Downloader", version="1.0.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
+# YouTube waa laga saaray, waxaa la reebay oo kaliya TikTok, Instagram, Facebook, iyo Pinterest
 ALLOWED_HOSTS = {
-    "youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "www.youtu.be",
     "tiktok.com", "www.tiktok.com", "vm.tiktok.com",
     "instagram.com", "www.instagram.com",
-    "facebook.com", "www.facebook.com", "fb.watch",
+    "facebook.com", "www.facebook.com", "fb.watch", "fb.me",
     "pinterest.com", "www.pinterest.com", "pin.it",
-    "x.com", "www.x.com", "twitter.com", "www.twitter.com",
-    "snapchat.com", "www.snapchat.com",
 }
 
 class DownloadRequest(BaseModel):
@@ -97,37 +95,29 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
         db.commit()
 
         outtmpl = str(DOWNLOAD_DIR / f"{job_id}.%(ext)s")
-        common = {
+        
+        # Format "best" waxay si fiican ugu shaqaysaa TikTok, IG, FB, iyo Pinterest iyadoon khaladaad keenin
+        options = {
             "outtmpl": outtmpl,
             "noplaylist": True,
             "quiet": True,
             "no_warnings": True,
             "restrictfilenames": True,
-            "retries": 2,
-            "fragment_retries": 2,
+            "retries": 3,
             "socket_timeout": 30,
+            "format": "best",
         }
 
         if kind == "audio":
-            options = {
-                **common,
-                "format": "bestaudio/best",
-                "postprocessors": [{
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "192",
-                }],
-            }
-        else:
-            options = {
-                **common,
-                "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-                "merge_output_format": "mp4",
-            }
+            options["postprocessors"] = [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }]
 
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=True)
-            item.title = safe_name(info.get("title") or "Media")
+            item.title = safe_name(info.get("title") or info.get("description") or "Media")
 
         output = find_output(job_id)
         if not output:
@@ -164,7 +154,7 @@ def create_download(payload: DownloadRequest, background_tasks: BackgroundTasks,
     if kind not in {"video", "audio"}:
         raise HTTPException(400, "Invalid download type.")
     if not host_allowed(url):
-        raise HTTPException(400, "This platform is not supported yet.")
+        raise HTTPException(400, "Boggan waxaa laga taageeraa oo kaliya TikTok, Instagram, Facebook, iyo Pinterest.")
 
     visitor_id = vexdou_visitor or uuid.uuid4().hex
     job_id = uuid.uuid4().hex
@@ -174,7 +164,7 @@ def create_download(payload: DownloadRequest, background_tasks: BackgroundTasks,
         job_id=job_id,
         visitor_id=visitor_id,
         url=url,
-        title="Preparing…",
+        title="Downloading...",
         status="queued",
         kind=kind,
     )
@@ -289,11 +279,3 @@ def clear_history(vexdou_visitor: str | None = Cookie(default=None)):
     db.close()
     return {"ok": True}
 
-def cleanup_old_files():
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
-    for path in DOWNLOAD_DIR.iterdir():
-        try:
-            if datetime.fromtimestamp(path.stat().st_mtime, timezone.utc) < cutoff:
-                path.unlink()
-        except OSError:
-            pass
