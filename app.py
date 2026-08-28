@@ -94,7 +94,6 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
         if not item:
             return
 
-        # Hubinta Instagram
         if "instagram.com" in url.lower():
             raise RuntimeError("Instagram Wili Laguma Darin appkeena")
 
@@ -289,7 +288,7 @@ def get_file(job_id: str, vexdou_visitor: str | None = Cookie(default=None)):
     return FileResponse(path, filename=f"{safe_name(item.title)}.{path.suffix.lstrip('.')}")
 
 @app.delete("/api/history")
-def clear_history(vexdou_visitor: str | None: Cookie(default=None)):
+def clear_history(vexdou_visitor: str | None = Cookie(default=None)):
     if not vexdou_visitor:
         return {"ok": True}
 
