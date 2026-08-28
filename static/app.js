@@ -1,125 +1,277 @@
-const $ = (s) => document.querySelector(s);
-const urlInput = $("#urlInput");
-const clearBtn = $("#clearBtn");
-const downloadBtn = $("#downloadBtn");
-const kind = $("#kind");
-const statusBox = $("#status");
-const historyList = $("#historyList");
-const historyCount = $("#historyCount");
+import asyncio
+import os
+import re
+import shutil
+import uuid
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from urllib.parse import urlparse
 
-urlInput.addEventListener("input", () => {
-  clearBtn.hidden = !urlInput.value;
-});
+from fastapi import BackgroundTasks, Cookie, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, HttpUrl
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, create_engine, select
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+import yt_dlp
 
-clearBtn.addEventListener("click", () => {
-  urlInput.value = "";
-  clearBtn.hidden = true;
-  urlInput.focus();
-});
+BASE_DIR = Path(__file__).resolve().parent
+DOWNLOAD_DIR = BASE_DIR / "downloads"
+DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-function status(text, type="") {
-  statusBox.textContent = text;
-  statusBox.className = `status ${type}`;
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
+
+if DATABASE_URL:
+    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+else:
+    engine = create_engine(
+        f"sqlite:///{BASE_DIR / 'downloader.db'}",
+        connect_args={"check_same_thread": False},
+    )
+
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+class Base(DeclarativeBase):
+    pass
+
+class Download(Base):
+    __tablename__ = "downloads"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    visitor_id: Mapped[str] = mapped_column(String(128), index=True)
+    url: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text, default="Media")
+    status: Mapped[str] = mapped_column(String(30), default="queued")
+    kind: Mapped[str] = mapped_column(String(20), default="video")
+    filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+Base.metadata.create_all(engine)
+
+app = FastAPI(title="VEXDOU Downloader", version="1.0.0")
+app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+
+ALLOWED_HOSTS = {
+    "tiktok.com", "www.tiktok.com", "vm.tiktok.com",
+    "instagram.com", "www.instagram.com",
+    "facebook.com", "www.facebook.com", "fb.watch", "fb.me",
+    "pinterest.com", "www.pinterest.com", "pin.it",
 }
 
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"']/g, c => ({
-    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
-  }[c]));
-}
+class DownloadRequest(BaseModel):
+    url: HttpUrl
+    kind: str = "video"
 
-function timeAgo(iso) {
-  if (!iso) return "";
-  const d = new Date(iso), s = Math.max(0, (Date.now() - d.getTime()) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s/60)}m ago`;
-  if (s < 86400) return `${Math.floor(s/3600)}h ago`;
-  return `${Math.floor(s/86400)}d ago`;
-}
+def host_allowed(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or "").lower().rstrip(".")
+        return any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
+    except Exception:
+        return False
 
-async function loadHistory() {
-  try {
-    const res = await fetch("/api/history");
-    const data = await res.json();
-    historyCount.textContent = data.items.length;
-    if (!data.items.length) {
-      historyList.innerHTML = '<div class="empty">Your downloads will appear here.</div>';
-      return;
+def safe_name(value: str) -> str:
+    value = re.sub(r'[\\/:*?"<>|]+', "_", value or "media")
+    value = re.sub(r"\s+", " ", value).strip()
+    return value[:160] or "media"
+
+def find_output(job_id: str) -> Path | None:
+    matches = list(DOWNLOAD_DIR.glob(f"{job_id}.*"))
+    return matches[0] if matches else None
+
+def run_download(job_id: str, visitor_id: str, url: str, kind: str):
+    db = SessionLocal()
+    item = db.scalar(select(Download).where(Download.job_id == job_id))
+    try:
+        if not item:
+            return
+        item.status = "downloading"
+        db.commit()
+
+        outtmpl = str(DOWNLOAD_DIR / f"{job_id}.%(ext)s")
+        options = {
+            "outtmpl": outtmpl,
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "restrictfilenames": True,
+            "retries": 3,
+            "socket_timeout": 30,
+            "format": "best",
+        }
+
+        if kind == "audio":
+            options["postprocessors"] = [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }]
+
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=True)
+            item.title = safe_name(info.get("title") or info.get("description") or "Media")
+
+        output = find_output(job_id)
+        if not output:
+            raise RuntimeError("Downloaded file was not created.")
+
+        item.filename = output.name
+        item.status = "completed"
+        item.error = None
+        db.commit()
+    except Exception as exc:
+        item.status = "failed"
+        item.error = str(exc)[:500]
+        db.commit()
+        for p in DOWNLOAD_DIR.glob(f"{job_id}.*"):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    finally:
+        db.close()
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return FileResponse(BASE_DIR / "templates" / "index.html")
+
+@app.get("/api/health")
+def health():
+    return {"ok": True, "service": "vexdou-downloader"}
+
+@app.post("/api/download")
+def create_download(payload: DownloadRequest, background_tasks: BackgroundTasks, vexdou_visitor: str | None = Cookie(default=None)):
+    url = str(payload.url)
+    kind = payload.kind.lower().strip()
+    if kind not in {"video", "audio"}:
+        raise HTTPException(400, "Invalid download type.")
+    if not host_allowed(url):
+        raise HTTPException(400, "Boggan waxaa laga taageeraa oo kaliya TikTok, Instagram, Facebook, iyo Pinterest.")
+
+    visitor_id = vexdou_visitor or uuid.uuid4().hex
+    job_id = uuid.uuid4().hex
+
+    db = SessionLocal()
+    item = Download(
+        job_id=job_id,
+        visitor_id=visitor_id,
+        url=url,
+        title="Downloading...",
+        status="queued",
+        kind=kind,
+    )
+    db.add(item)
+    db.commit()
+    db.close()
+
+    background_tasks.add_task(run_download, job_id, visitor_id, url, kind)
+
+    response = JSONResponse({
+        "ok": True,
+        "job_id": job_id,
+        "visitor_id": visitor_id,
+        "status": "queued",
+    })
+    if not vexdou_visitor:
+        response.set_cookie(
+            "vexdou_visitor",
+            visitor_id,
+            max_age=60 * 60 * 24 * 365,
+            httponly=True,
+            samesite="lax",
+            secure=False,
+        )
+    return response
+
+@app.get("/api/download/{job_id}")
+def download_status(job_id: str, vexdou_visitor: str | None = Cookie(default=None)):
+    if not vexdou_visitor:
+        raise HTTPException(404, "Download not found.")
+
+    db = SessionLocal()
+    item = db.scalar(select(Download).where(
+        Download.job_id == job_id,
+        Download.visitor_id == vexdou_visitor
+    ))
+    db.close()
+
+    if not item:
+        raise HTTPException(404, "Download not found.")
+
+    return {
+        "job_id": item.job_id,
+        "status": item.status,
+        "title": item.title,
+        "kind": item.kind,
+        "error": item.error,
+        "download_url": f"/api/file/{item.job_id}" if item.status == "completed" else None,
     }
-    historyList.innerHTML = data.items.map(x => `
-      <div class="history-item">
-        <div class="history-icon">${x.kind === "audio" ? "♫" : "▶"}</div>
-        <div class="history-info">
-          <div class="history-title">${escapeHtml(x.title)}</div>
-          <div class="history-meta">${escapeHtml(x.status)} · ${timeAgo(x.created_at)}</div>
-        </div>
-        ${x.download_url ? `<a class="history-action" href="${x.download_url}">Save →</a>` : ""}
-      </div>
-    `).join("");
-  } catch {
-    historyList.innerHTML = '<div class="empty">History is temporarily unavailable.</div>';
-  }
-}
 
-async function poll(jobId) {
-  for (let i = 0; i < 180; i++) {
-    await new Promise(r => setTimeout(r, 1500));
-    const res = await fetch(`/api/download/${jobId}`);
-    if (!res.ok) throw new Error("Download job was lost.");
-    const data = await res.json();
+@app.get("/api/history")
+def history(vexdou_visitor: str | None = Cookie(default=None)):
+    if not vexdou_visitor:
+        return {"items": []}
 
-    if (data.status === "completed") {
-      status(`Ready — ${data.title}`, "success");
-      window.location.href = data.download_url;
-      downloadBtn.disabled = false;
-      downloadBtn.innerHTML = "<span>Download</span><b>→</b>";
-      loadHistory();
-      return;
-    }
-    if (data.status === "failed") {
-      throw new Error(data.error || "Download failed.");
-    }
-    status(data.status === "downloading" ? "Downloading your media…" : "Preparing download…");
-  }
-  throw new Error("The download took too long. Please try again.");
-}
+    db = SessionLocal()
+    items = db.scalars(
+        select(Download)
+        .where(Download.visitor_id == vexdou_visitor)
+        .order_by(Download.created_at.desc())
+        .limit(50)
+    ).all()
 
-downloadBtn.addEventListener("click", async () => {
-  const url = urlInput.value.trim();
-  if (!url) {
-    status("Paste a public media link first.", "error");
-    urlInput.focus();
-    return;
-  }
+    result = [{
+        "job_id": x.job_id,
+        "title": x.title,
+        "status": x.status,
+        "kind": x.kind,
+        "created_at": x.created_at.isoformat() if x.created_at else None,
+        "download_url": f"/api/file/{x.job_id}" if x.status == "completed" else None,
+    } for x in items]
+    db.close()
+    return {"items": result}
 
-  downloadBtn.disabled = true;
-  downloadBtn.innerHTML = "<span>Starting…</span><b>•</b>";
-  status("Checking the link…");
+@app.get("/api/file/{job_id}")
+def get_file(job_id: str, vexdou_visitor: str | None = Cookie(default=None)):
+    if not vexdou_visitor:
+        raise HTTPException(404, "File not found.")
 
-  try {
-    const res = await fetch("/api/download", {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({url, kind: kind.value})
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "Could not start download.");
-    await poll(data.job_id);
-  } catch (err) {
-    status(err.message, "error");
-    downloadBtn.disabled = false;
-    downloadBtn.innerHTML = "<span>Download</span><b>→</b>";
-  }
-});
+    db = SessionLocal()
+    item = db.scalar(select(Download).where(
+        Download.job_id == job_id,
+        Download.visitor_id == vexdou_visitor,
+        Download.status == "completed"
+    ))
+    db.close()
 
-$("#historyBtn").addEventListener("click", () => {
-  $("#historySection").scrollIntoView({behavior:"smooth"});
-});
+    if not item or not item.filename:
+        raise HTTPException(404, "File not found.")
 
-$("#clearHistory").addEventListener("click", async () => {
-  if (!confirm("Clear your browser history?")) return;
-  await fetch("/api/history", {method:"DELETE"});
-  loadHistory();
-});
+    path = DOWNLOAD_DIR / item.filename
+    if not path.exists() or path.parent.resolve() != DOWNLOAD_DIR.resolve():
+        raise HTTPException(404, "File not found.")
 
-loadHistory();
+    return FileResponse(path, filename=f"{safe_name(item.title)}.{path.suffix.lstrip('.')}")
+
+@app.delete("/api/history")
+def clear_history(vexdou_visitor: str | None = Cookie(default=None)):
+    if not vexdou_visitor:
+        return {"ok": True}
+
+    db = SessionLocal()
+    items = db.scalars(select(Download).where(Download.visitor_id == vexdou_visitor)).all()
+    for item in items:
+        if item.filename:
+            try:
+                (DOWNLOAD_DIR / item.filename).unlink(missing_ok=True)
+            except OSError:
+                pass
+        db.delete(item)
+    db.commit()
+    db.close()
+    return {"ok": True}
