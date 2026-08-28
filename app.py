@@ -151,7 +151,7 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
         elif "Sign in to confirm" in err_msg or "bot" in err_msg.lower() or "youtube" in url.lower():
             item.error = "YouTube wuxuu xannibay server-ka. Fadlan isku day TikTok ama Facebook."
         else:
-            item.error = "Cillad ayaa dhacday ama link-ga waa mid gaar ah."
+            item.error = "Cillad ayaa dhacday ama link-ga waa mid gaار ah."
         db.commit()
         for p in DOWNLOAD_DIR.glob(f"{job_id}.*"):
             try:
@@ -164,6 +164,15 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
 @app.get("/", response_class=HTMLResponse)
 def home():
     return FileResponse(BASE_DIR / "templates" / "index.html")
+
+# Routing-ka loogu talagalay PWA Manifest iyo Service Worker
+@app.get("/manifest.json")
+def serve_manifest():
+    return FileResponse(BASE_DIR / "manifest.json", media_type="application/json")
+
+@app.get("/sw.js")
+def serve_sw():
+    return FileResponse(BASE_DIR / "sw.js", media_type="application/javascript")
 
 @app.get("/api/health")
 def health():
