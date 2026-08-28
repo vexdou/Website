@@ -95,6 +95,8 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
         db.commit()
 
         outtmpl = str(DOWNLOAD_DIR / f"{job_id}.%(ext)s")
+        
+        # Options-ka oo lagu daray User-Agent si uu Instagram u aqoonsado browser sax ah
         options = {
             "outtmpl": outtmpl,
             "noplaylist": True,
@@ -104,6 +106,11 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
             "retries": 3,
             "socket_timeout": 30,
             "format": "best",
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+            }
         }
 
         if kind == "audio":
@@ -116,7 +123,7 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=True)
             item.title = safe_name(info.get("title") or info.get("description") or "Media")
-            item.thumbnail = info.get("thumbnail") # Halkan ayuu ka qaadayaa sawirka video-ga
+            item.thumbnail = info.get("thumbnail")
 
         output = find_output(job_id)
         if not output:
