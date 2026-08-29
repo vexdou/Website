@@ -1,192 +1,1448 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#050708">
-  <meta name="description" content="VEXDOU Downloader — fast, private public-media downloads.">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+
+  <title>VEXDOU — Media Downloader</title>
+
+  <meta name="theme-color" content="#06100d">
+  <meta name="description" content="VEXDOU — Fast and beautiful public media downloader.">
+
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="application-name" content="VEXDOU">
+
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="VEXDOU">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="stylesheet" href="/static/styles.css">
-  <title>VEXDOU — Downloader</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --bg: #030706;
+      --panel: rgba(11, 23, 19, .62);
+      --panel2: rgba(15, 30, 25, .48);
+      --border: rgba(255,255,255,.09);
+      --text: #f5fff9;
+      --muted: #82958e;
+      --green: #00e89b;
+      --green2: #00b879;
+      --blue: #55cfff;
+      --purple: #9c6cff;
+      --danger: #ff5d70;
+      --shadow: 0 30px 100px rgba(0,0,0,.48);
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 10% 0%, rgba(0,255,170,.10), transparent 32%),
+        radial-gradient(circle at 90% 15%, rgba(77,110,255,.10), transparent 30%),
+        radial-gradient(circle at 50% 100%, rgba(0,255,170,.07), transparent 38%),
+        var(--bg);
+      color: var(--text);
+      font-family:
+        Inter, ui-sans-serif, system-ui, -apple-system,
+        BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow-x: hidden;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .035;
+      background-image:
+        linear-gradient(rgba(255,255,255,.5) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.5) 1px, transparent 1px);
+      background-size: 60px 60px;
+      mask-image: linear-gradient(to bottom, black, transparent 75%);
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    button,
+    a {
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .app {
+      width: min(1280px, calc(100% - 32px));
+      margin: auto;
+    }
+
+    /* ================= INSTALL BANNER ================= */
+
+    .install-banner {
+      position: fixed;
+      top: 18px;
+      left: 50%;
+      transform: translate(-50%, -150%);
+      width: min(760px, calc(100% - 24px));
+      z-index: 99999;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 12px 14px;
+      border: 1px solid rgba(0,255,174,.22);
+      border-radius: 22px;
+      background:
+        linear-gradient(
+          135deg,
+          rgba(10,35,27,.90),
+          rgba(7,15,18,.91)
+        );
+      backdrop-filter: blur(28px);
+      -webkit-backdrop-filter: blur(28px);
+      box-shadow:
+        0 25px 80px rgba(0,0,0,.55),
+        0 0 50px rgba(0,255,170,.08);
+      opacity: 0;
+      visibility: hidden;
+      transition:
+        transform .45s cubic-bezier(.2,.8,.2,1),
+        opacity .35s ease,
+        visibility .35s;
+    }
+
+    .install-banner.show {
+      transform: translate(-50%, 0);
+      opacity: 1;
+      visibility: visible;
+    }
+
+    .install-icon {
+      width: 48px;
+      height: 48px;
+      flex: 0 0 48px;
+      border-radius: 15px;
+      display: grid;
+      place-items: center;
+      background:
+        linear-gradient(135deg, rgba(0,232,155,.25), rgba(85,207,255,.12));
+      border: 1px solid rgba(0,232,155,.18);
+      font-size: 22px;
+    }
+
+    .install-copy {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .install-copy strong {
+      display: block;
+      font-size: 14px;
+      letter-spacing: -.2px;
+    }
+
+    .install-copy span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .install-now {
+      border: 0;
+      color: #00140c;
+      background: linear-gradient(135deg, #00f0a3, #00b978);
+      padding: 11px 17px;
+      border-radius: 13px;
+      font-weight: 900;
+      white-space: nowrap;
+      box-shadow: 0 8px 25px rgba(0,232,155,.20);
+    }
+
+    .install-close {
+      width: 36px;
+      height: 36px;
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: 11px;
+      background: rgba(255,255,255,.04);
+      color: #9aaba5;
+      font-size: 19px;
+    }
+
+    /* ================= HEADER ================= */
+
+    .top {
+      position: relative;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 26px 0;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+    }
+
+    .brand-logo {
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      font-weight: 1000;
+      font-size: 21px;
+      color: #03130d;
+      background: linear-gradient(135deg, #00efaa, #52cfff);
+      box-shadow: 0 10px 35px rgba(0,232,155,.18);
+    }
+
+    .brand-name {
+      font-size: 17px;
+      font-weight: 950;
+      letter-spacing: -.7px;
+    }
+
+    .brand-sub {
+      display: block;
+      color: #61756e;
+      font-size: 8px;
+      letter-spacing: 2px;
+      margin-top: 2px;
+    }
+
+    .nav-actions {
+      display: flex;
+      gap: 9px;
+    }
+
+    .nav-btn {
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.035);
+      color: #d8e7e2;
+      min-height: 42px;
+      padding: 0 15px;
+      border-radius: 13px;
+      backdrop-filter: blur(18px);
+    }
+
+    .nav-btn:hover {
+      border-color: rgba(0,232,155,.28);
+      background: rgba(0,232,155,.06);
+    }
+
+    .nav-btn.active {
+      border-color: rgba(0,232,155,.35);
+      color: #00eaa0;
+    }
+
+    .mobile-menu {
+      display: none;
+    }
+
+    /* ================= HERO ================= */
+
+    .hero {
+      min-height: 610px;
+      display: grid;
+      grid-template-columns: 1.05fr .95fr;
+      align-items: center;
+      gap: 30px;
+      padding: 45px 0 70px;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border: 1px solid rgba(0,232,155,.16);
+      border-radius: 100px;
+      background: rgba(0,232,155,.055);
+      color: #71dcb9;
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: 1.7px;
+    }
+
+    .hero-badge i {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 14px var(--green);
+    }
+
+    .hero h1 {
+      max-width: 760px;
+      margin-top: 24px;
+      font-size: clamp(58px, 8vw, 108px);
+      line-height: .87;
+      letter-spacing: -6px;
+      font-weight: 1000;
+    }
+
+    .hero h1 span {
+      background: linear-gradient(
+        100deg,
+        #00efaa,
+        #1fe1bd 45%,
+        #60cfff
+      );
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .hero-copy {
+      max-width: 590px;
+      margin-top: 28px;
+      color: #84948f;
+      font-size: 17px;
+      line-height: 1.75;
+    }
+
+    /* ================= HERO VISUAL ================= */
+
+    .visual {
+      position: relative;
+      min-height: 430px;
+      display: grid;
+      place-items: center;
+    }
+
+    .visual-glow {
+      position: absolute;
+      width: 310px;
+      height: 310px;
+      border-radius: 50%;
+      background: rgba(0,232,155,.14);
+      filter: blur(80px);
+    }
+
+    .visual-ring {
+      position: absolute;
+      width: 380px;
+      height: 380px;
+      border: 1px solid rgba(0,232,155,.10);
+      border-radius: 50%;
+      animation: spin 18s linear infinite;
+    }
+
+    .visual-ring::before,
+    .visual-ring::after {
+      content: "";
+      position: absolute;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 25px var(--green);
+    }
+
+    .visual-ring::before {
+      top: 20px;
+      left: 50%;
+    }
+
+    .visual-ring::after {
+      bottom: 40px;
+      right: 20px;
+      background: var(--blue);
+      box-shadow: 0 0 25px var(--blue);
+    }
+
+    .visual-card {
+      position: relative;
+      z-index: 2;
+      width: 250px;
+      height: 280px;
+      border: 1px solid rgba(255,255,255,.11);
+      border-radius: 45px;
+      background:
+        linear-gradient(
+          145deg,
+          rgba(23,46,39,.76),
+          rgba(7,14,16,.78)
+        );
+      backdrop-filter: blur(25px);
+      box-shadow:
+        0 40px 100px rgba(0,0,0,.5),
+        inset 0 1px 0 rgba(255,255,255,.09);
+      transform: rotate(-7deg);
+      display: grid;
+      place-items: center;
+    }
+
+    .visual-card::before {
+      content: "";
+      position: absolute;
+      inset: 12px;
+      border: 1px solid rgba(255,255,255,.045);
+      border-radius: 36px;
+    }
+
+    .visual-v {
+      font-size: 130px;
+      font-weight: 1000;
+      line-height: 1;
+      background: linear-gradient(135deg,#00efa4,#51ccff);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .visual-arrow {
+      position: absolute;
+      right: 37px;
+      bottom: 38px;
+      font-size: 32px;
+      color: #b070ff;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* ================= DOWNLOADER ================= */
+
+    .download-wrap {
+      position: relative;
+      margin-top: -20px;
+    }
+
+    .download-card {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.10);
+      border-radius: 30px;
+      padding: 27px;
+      background:
+        linear-gradient(
+          135deg,
+          rgba(15,31,26,.78),
+          rgba(6,13,15,.74)
+        );
+      backdrop-filter: blur(30px);
+      -webkit-backdrop-filter: blur(30px);
+      box-shadow: var(--shadow);
+    }
+
+    .download-card::before {
+      content: "";
+      position: absolute;
+      width: 350px;
+      height: 350px;
+      top: -250px;
+      right: -120px;
+      background: rgba(0,232,155,.09);
+      filter: blur(70px);
+      pointer-events: none;
+    }
+
+    .download-top {
+      position: relative;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 18px;
+    }
+
+    .eyebrow {
+      color: #60736d;
+      font-size: 9px;
+      letter-spacing: 2px;
+      font-weight: 900;
+    }
+
+    .download-title {
+      margin-top: 5px;
+      font-size: 25px;
+      letter-spacing: -1px;
+      font-weight: 950;
+    }
+
+    .ready {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 8px 11px;
+      border: 1px solid rgba(0,232,155,.15);
+      background: rgba(0,232,155,.05);
+      color: #63d9b4;
+      border-radius: 100px;
+      font-size: 9px;
+      font-weight: 900;
+    }
+
+    .ready::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 12px var(--green);
+    }
+
+    .input-area {
+      position: relative;
+      display: grid;
+      grid-template-columns: 1fr 145px 160px;
+      gap: 10px;
+    }
+
+    .input-box,
+    .type-select {
+      height: 62px;
+      border-radius: 17px;
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(1,8,7,.62);
+      color: #fff;
+    }
+
+    .input-box {
+      display: flex;
+      align-items: center;
+      padding: 0 17px;
+    }
+
+    .input-icon {
+      color: var(--green);
+      font-size: 20px;
+      margin-right: 12px;
+    }
+
+    #urlInput {
+      width: 100%;
+      border: 0;
+      outline: 0;
+      color: #f3fff9;
+      background: transparent;
+      font-size: 14px;
+    }
+
+    #urlInput::placeholder {
+      color: #596a65;
+    }
+
+    .clear-input {
+      width: 30px;
+      height: 30px;
+      border: 0;
+      border-radius: 9px;
+      background: rgba(255,255,255,.05);
+      color: #778782;
+    }
+
+    .type-select {
+      padding: 0 16px;
+      outline: 0;
+      appearance: auto;
+    }
+
+    .main-download {
+      height: 62px;
+      border: 0;
+      border-radius: 17px;
+      color: #00160d;
+      font-weight: 1000;
+      font-size: 15px;
+      background: linear-gradient(135deg,#00eda2,#00b875);
+      box-shadow: 0 15px 40px rgba(0,232,155,.20);
+      transition: transform .2s ease, filter .2s ease;
+    }
+
+    .main-download:hover {
+      transform: translateY(-2px);
+      filter: brightness(1.06);
+    }
+
+    .main-download:disabled {
+      opacity: .55;
+      cursor: wait;
+      transform: none;
+    }
+
+    .supported {
+      display: flex;
+      gap: 13px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+      color: #50615c;
+      font-size: 9px;
+      font-weight: 900;
+      letter-spacing: .7px;
+    }
+
+    .supported strong {
+      color: #72857f;
+    }
+
+    .supported span {
+      color: #6c8179;
+    }
+
+    /* ================= STATUS ================= */
+
+    .status {
+      min-height: 30px;
+      margin-top: 15px;
+      text-align: center;
+      color: #7d9089;
+      font-size: 13px;
+    }
+
+    .status.success {
+      color: #42e6ae;
+    }
+
+    .status.error {
+      color: #ff7483;
+    }
+
+    /* ================= SECTIONS ================= */
+
+    .section {
+      display: none;
+      padding: 80px 0;
+    }
+
+    .section.active {
+      display: block;
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      margin-bottom: 24px;
+    }
+
+    .section-head h2 {
+      margin-top: 6px;
+      font-size: 42px;
+      letter-spacing: -2px;
+    }
+
+    .ghost {
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.035);
+      color: #91a29c;
+      border-radius: 12px;
+      padding: 10px 14px;
+    }
+
+    /* ================= FEATURES ================= */
+
+    .features {
+      display: grid;
+      grid-template-columns: repeat(3,1fr);
+      gap: 13px;
+      padding: 55px 0 20px;
+    }
+
+    .feature {
+      min-height: 190px;
+      padding: 25px;
+      border-radius: 22px;
+      border: 1px solid rgba(255,255,255,.065);
+      background: rgba(255,255,255,.025);
+      backdrop-filter: blur(20px);
+    }
+
+    .feature-number {
+      color: var(--green);
+      font-size: 10px;
+      font-weight: 1000;
+      letter-spacing: 2px;
+    }
+
+    .feature h3 {
+      margin-top: 25px;
+      font-size: 20px;
+    }
+
+    .feature p {
+      margin-top: 8px;
+      color: #657771;
+      line-height: 1.6;
+      font-size: 13px;
+    }
+
+    /* ================= MEDIA ================= */
+
+    .media-grid {
+      display: grid;
+      grid-template-columns: repeat(3,1fr);
+      gap: 15px;
+    }
+
+    .media-card,
+    .history-card {
+      border: 1px solid rgba(255,255,255,.07);
+      background: rgba(255,255,255,.025);
+      border-radius: 21px;
+      overflow: hidden;
+      backdrop-filter: blur(20px);
+    }
+
+    .media-thumb {
+      width: 100%;
+      height: 180px;
+      position: relative;
+      border: 0;
+      background: #07100d;
+      overflow: hidden;
+    }
+
+    .media-thumb img,
+    .history-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .thumb-placeholder {
+      width: 100%;
+      height: 100%;
+      display: grid;
+      place-items: center;
+      color: #00dc96;
+      font-size: 42px;
+    }
+
+    .play {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%,-50%);
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: #00160e;
+      background: #00eaa0;
+      box-shadow: 0 10px 30px rgba(0,232,155,.35);
+    }
+
+    .media-body {
+      padding: 15px;
+    }
+
+    .media-title {
+      font-size: 14px;
+      font-weight: 800;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .media-meta {
+      margin-top: 6px;
+      color: #61736d;
+      font-size: 11px;
+    }
+
+    .media-actions {
+      display: flex;
+      gap: 7px;
+      margin-top: 13px;
+    }
+
+    .save-btn,
+    .fav-btn {
+      border-radius: 10px;
+      padding: 9px 11px;
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .save-btn {
+      background: rgba(0,232,155,.10);
+      border: 1px solid rgba(0,232,155,.16);
+      color: #49dcae;
+    }
+
+    .fav-btn {
+      border: 1px solid rgba(255,255,255,.07);
+      background: rgba(255,255,255,.035);
+      color: #8b9b95;
+    }
+
+    .fav-btn.active {
+      color: #ff6e8a;
+      border-color: rgba(255,110,138,.18);
+      background: rgba(255,110,138,.06);
+    }
+
+    /* ================= HISTORY ================= */
+
+    .history-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .history-card {
+      display: grid;
+      grid-template-columns: 105px 1fr auto;
+      align-items: center;
+      padding: 10px;
+      gap: 15px;
+    }
+
+    .history-thumb {
+      width: 105px;
+      height: 75px;
+      position: relative;
+      border: 0;
+      border-radius: 13px;
+      overflow: hidden;
+      background: #07100d;
+    }
+
+    .history-info {
+      border: 0;
+      background: transparent;
+      text-align: left;
+      min-width: 0;
+      color: white;
+    }
+
+    .history-info strong {
+      display: block;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .history-info span {
+      display: block;
+      margin-top: 5px;
+      color: #657771;
+      font-size: 11px;
+    }
+
+    .history-info small {
+      display: block;
+      margin-top: 6px;
+      color: #42534e;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .history-actions {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    /* ================= EMPTY ================= */
+
+    .empty {
+      padding: 60px 20px;
+      text-align: center;
+      border: 1px dashed rgba(255,255,255,.08);
+      border-radius: 20px;
+      color: #60716c;
+    }
+
+    .empty-icon {
+      font-size: 32px;
+      margin-bottom: 12px;
+    }
+
+    /* ================= PREVIEW ================= */
+
+    .preview {
+      margin-top: 18px;
+      padding: 18px;
+      border-radius: 22px;
+      border: 1px solid rgba(0,232,155,.13);
+      background: rgba(0,232,155,.035);
+    }
+
+    .preview video {
+      display: block;
+      width: 100%;
+      max-height: 500px;
+      border-radius: 15px;
+      background: #000;
+    }
+
+    .preview-head {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 13px;
+    }
+
+    .preview-title {
+      font-size: 15px;
+      font-weight: 900;
+    }
+
+    .preview-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 13px;
+    }
+
+    /* ================= MODAL ================= */
+
+    .modal {
+      position: fixed;
+      inset: 0;
+      z-index: 100000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      background: rgba(0,5,4,.83);
+      backdrop-filter: blur(22px);
+    }
+
+    .modal.show {
+      display: flex;
+    }
+
+    .modal-box {
+      position: relative;
+      width: min(720px,100%);
+      padding: 16px;
+      border: 1px solid rgba(255,255,255,.09);
+      border-radius: 25px;
+      background: rgba(9,19,16,.90);
+      box-shadow: 0 40px 100px rgba(0,0,0,.65);
+    }
+
+    .modal-box video {
+      width: 100%;
+      max-height: 75vh;
+      border-radius: 16px;
+      background: #000;
+    }
+
+    .modal-close {
+      position: absolute;
+      right: 12px;
+      top: 12px;
+      z-index: 2;
+      width: 36px;
+      height: 36px;
+      border: 0;
+      border-radius: 50%;
+      color: white;
+      background: rgba(0,0,0,.65);
+      font-size: 19px;
+    }
+
+    .modal-title {
+      padding: 12px 5px 3px;
+      font-size: 14px;
+    }
+
+    /* ================= FOOTER ================= */
+
+    footer {
+      display: flex;
+      justify-content: space-between;
+      padding: 55px 0 30px;
+      color: #43534e;
+      font-size: 11px;
+      border-top: 1px solid rgba(255,255,255,.05);
+      margin-top: 60px;
+    }
+
+    /* ================= RESPONSIVE ================= */
+
+    @media (max-width: 900px) {
+      .hero {
+        grid-template-columns: 1fr;
+        padding-top: 25px;
+      }
+
+      .visual {
+        min-height: 320px;
+      }
+
+      .visual-ring {
+        width: 290px;
+        height: 290px;
+      }
+
+      .input-area {
+        grid-template-columns: 1fr;
+      }
+
+      .features,
+      .media-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+
+    @media (max-width: 620px) {
+      .app {
+        width: min(100% - 22px, 560px);
+      }
+
+      .top {
+        padding: 15px 0;
+      }
+
+      .nav-actions .history-nav {
+        display: none;
+      }
+
+      .mobile-menu {
+        display: block;
+      }
+
+      .hero {
+        min-height: auto;
+        padding: 40px 0 55px;
+      }
+
+      .hero h1 {
+        font-size: 61px;
+        letter-spacing: -4px;
+      }
+
+      .hero-copy {
+        font-size: 14px;
+        line-height: 1.7;
+      }
+
+      .visual {
+        min-height: 270px;
+      }
+
+      .visual-card {
+        width: 185px;
+        height: 210px;
+        border-radius: 34px;
+      }
+
+      .visual-v {
+        font-size: 95px;
+      }
+
+      .visual-arrow {
+        right: 25px;
+        bottom: 27px;
+      }
+
+      .download-card {
+        padding: 17px;
+        border-radius: 23px;
+      }
+
+      .download-top {
+        align-items: flex-start;
+      }
+
+      .download-title {
+        font-size: 21px;
+      }
+
+      .ready {
+        font-size: 8px;
+      }
+
+      .features,
+      .media-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .history-card {
+        grid-template-columns: 72px 1fr;
+      }
+
+      .history-thumb {
+        width: 72px;
+        height: 64px;
+      }
+
+      .history-actions {
+        grid-column: 2;
+      }
+
+      .section-head h2 {
+        font-size: 31px;
+      }
+
+      footer {
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .install-banner {
+        top: 9px;
+        border-radius: 18px;
+      }
+
+      .install-icon {
+        width: 40px;
+        height: 40px;
+        flex-basis: 40px;
+      }
+
+      .install-copy span {
+        font-size: 10px;
+      }
+
+      .install-now {
+        padding: 10px 12px;
+      }
+    }
+  </style>
 </head>
+
 <body>
-<div class="ambient ambient-a"></div>
-<div class="ambient ambient-b"></div>
 
-<div class="app-shell">
-  <aside class="sidebar" id="sidebar">
-    <div class="brand">
-      <div class="brand-logo">V</div>
-      <div class="brand-text">
-        <strong>VEXDOU</strong>
-        <small>MEDIA DOWNLOADER</small>
-      </div>
-    </div>
+  <!-- ================= INSTALL BANNER ================= -->
 
-    <div class="side-label">WORKSPACE</div>
-    <nav class="side-nav" aria-label="Main navigation">
-      <button class="side-link active" type="button" data-view="home">
-        <span class="side-icon">⌂</span><span>Home</span>
-      </button>
-      <button class="side-link" type="button" data-view="downloads">
-        <span class="side-icon">↓</span><span>Downloads</span>
-      </button>
-      <button class="side-link" type="button" data-view="history">
-        <span class="side-icon">◷</span><span>History</span>
-      </button>
-      <button class="side-link" type="button" data-view="favorites">
-        <span class="side-icon">♡</span><span>Favorites</span>
-      </button>
-    </nav>
+  <div id="installBanner" class="install-banner" aria-live="polite">
+    <div class="install-icon">↥</div>
 
-    <div class="side-spacer"></div>
-
-    <div class="side-install">
-      <div class="install-orb">↥</div>
+    <div class="install-copy">
       <strong>Install VEXDOU</strong>
-      <p>Use VEXDOU like an app from your Android home screen.</p>
-      <button id="sideInstallBtn" class="side-install-btn" type="button">Install App</button>
+      <span>Use VEXDOU faster from your Android home screen.</span>
     </div>
 
-    <div class="side-footer">
-      <span>Private by default</span>
-      <span class="live-dot"></span>
-    </div>
-  </aside>
+    <button id="installNow" class="install-now" type="button">
+      Install
+    </button>
 
-  <main class="main">
-    <header class="topbar">
-      <button id="mobileMenuBtn" class="top-icon mobile-only" type="button" aria-label="Open menu">☰</button>
-      <button id="installAppBtn" class="install-btn" type="button">↥ <span>Install App</span></button>
-      <button id="historyBtn" class="top-icon" type="button" aria-label="Open history">◷<b id="historyCount">0</b></button>
+    <button id="installClose" class="install-close" type="button" aria-label="Close">
+      ×
+    </button>
+  </div>
+
+  <div class="app">
+
+    <!-- ================= HEADER ================= -->
+
+    <header class="top">
+
+      <a href="#" class="brand" id="homeBrand">
+        <div class="brand-logo">V</div>
+
+        <div>
+          <div class="brand-name">VEXDOU</div>
+          <span class="brand-sub">MEDIA DOWNLOADER</span>
+        </div>
+      </a>
+
+      <nav class="nav-actions">
+
+        <button class="nav-btn mobile-menu" id="mobileHome">
+          Home
+        </button>
+
+        <button class="nav-btn history-nav" data-view="downloads">
+          Downloads
+        </button>
+
+        <button class="nav-btn history-nav" data-view="history">
+          History
+        </button>
+
+        <button class="nav-btn" data-view="favorites">
+          ♡ Favorites
+        </button>
+
+      </nav>
+
     </header>
 
-    <section class="hero view-home" id="homeView">
-      <div class="hero-left">
-        <div class="hero-badge"><span>●</span> SIMPLE · FAST · PRIVATE</div>
-        <h1>Download<br><span>without limits.</span></h1>
-        <p class="hero-copy">Paste a public video or social-media link. VEXDOU processes it on the backend and gives you a ready-to-save file.</p>
-      </div>
-      <div class="hero-art" aria-hidden="true">
-        <div class="hero-ring"></div>
-        <div class="hero-ring ring-two"></div>
-        <div class="hero-logo-card">
-          <div class="hero-v">V</div>
-          <div class="hero-arrow">↓</div>
-        </div>
-      </div>
-    </section>
+    <!-- ================= HOME ================= -->
 
-    <section class="download-section view-home">
-      <div class="download-panel">
-        <div class="panel-head">
-          <div>
-            <span class="panel-kicker">NEW DOWNLOAD</span>
-            <h2>Paste your link</h2>
+    <main id="homeSection">
+
+      <section class="hero">
+
+        <div>
+
+          <div class="hero-badge">
+            <i></i>
+            SIMPLE · FAST · PRIVATE
           </div>
-          <span class="secure-pill">● READY</span>
+
+          <h1>
+            Download
+            <br>
+            <span>anything.</span>
+          </h1>
+
+          <p class="hero-copy">
+            Paste a public media link and let VEXDOU turn it
+            into a clean, ready-to-save file.
+          </p>
+
         </div>
 
-        <div class="download-row">
-          <div class="url-shell">
-            <span class="link-icon">↗</span>
-            <input id="urlInput" type="url" inputmode="url" autocomplete="off" spellcheck="false"
-                   placeholder="Paste a TikTok, YouTube, Facebook, Pinterest or X link…">
-            <button id="clearBtn" class="clear" type="button" hidden aria-label="Clear">×</button>
+        <div class="visual">
+
+          <div class="visual-glow"></div>
+
+          <div class="visual-ring"></div>
+
+          <div class="visual-card">
+            <div class="visual-v">V</div>
+            <div class="visual-arrow">↓</div>
           </div>
-          <select id="kind" aria-label="Download type">
-            <option value="video">Video</option>
-            <option value="audio">MP3</option>
-          </select>
-          <button id="downloadBtn" class="download-btn" type="button">
-            <span>Download</span><b>→</b>
-          </button>
+
         </div>
 
-        <div class="supported">
-          <span>SUPPORTED</span><i>TikTok</i><i>YouTube</i><i>Facebook</i><i>Pinterest</i><i>X</i>
-        </div>
-      </div>
+      </section>
 
-      <div id="status" class="status" aria-live="polite"></div>
+      <!-- ================= DOWNLOADER ================= -->
 
-      <div id="previewCard" class="preview-card" hidden>
-        <div class="preview-top">
-          <div>
-            <span class="panel-kicker">READY</span>
-            <h3 id="previewTitle">Your media</h3>
+      <section class="download-wrap">
+
+        <div class="download-card">
+
+          <div class="download-top">
+
+            <div>
+              <div class="eyebrow">NEW DOWNLOAD</div>
+              <div class="download-title">Paste your link</div>
+            </div>
+
+            <div class="ready">READY</div>
+
           </div>
-          <span class="secure-pill">COMPLETED</span>
+
+          <div class="input-area">
+
+            <div class="input-box">
+
+              <span class="input-icon">↗</span>
+
+              <input
+                id="urlInput"
+                type="url"
+                inputmode="url"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="Paste TikTok, YouTube, Facebook, Pinterest or X link..."
+              >
+
+              <button
+                id="clearBtn"
+                class="clear-input"
+                type="button"
+                hidden
+              >×</button>
+
+            </div>
+
+            <select id="kind" class="type-select">
+              <option value="video">Video</option>
+              <option value="audio">MP3</option>
+            </select>
+
+            <button id="downloadBtn" class="main-download">
+              Download →
+            </button>
+
+          </div>
+
+          <div class="supported">
+            <strong>SUPPORTED</strong>
+            <span>TikTok</span>
+            <span>YouTube</span>
+            <span>Facebook</span>
+            <span>Pinterest</span>
+            <span>X</span>
+          </div>
+
         </div>
-        <video id="videoPreview" controls playsinline preload="metadata"></video>
-        <div id="previewMeta"></div>
-      </div>
-    </section>
 
-    <section class="feature-strip view-home">
-      <article><span>01</span><h3>No account</h3><p>Your visitor history is linked to this browser.</p></article>
-      <article><span>02</span><h3>Direct processing</h3><p>The downloader runs through your own backend.</p></article>
-      <article><span>03</span><h3>Easy playback</h3><p>Completed video history can be opened and played directly.</p></article>
-    </section>
+        <div id="status" class="status"></div>
 
-    <section id="historySection" class="content-section">
-      <div class="section-header">
-        <div><span class="panel-kicker">YOUR BROWSER</span><h2>Recent history</h2></div>
-        <button id="clearHistory" class="ghost-btn" type="button">Clear history</button>
-      </div>
-      <div id="historyList" class="history-list"></div>
-    </section>
+        <!-- ================= PREVIEW ================= -->
 
-    <section id="downloadsSection" class="content-section">
-      <div class="section-header">
-        <div><span class="panel-kicker">YOUR MEDIA</span><h2>Downloads</h2></div>
-        <button id="downloadsRefresh" class="ghost-btn" type="button">Refresh</button>
+        <div id="previewCard" class="preview" hidden>
+
+          <div class="preview-head">
+
+            <div>
+              <div class="eyebrow">COMPLETED</div>
+              <div id="previewTitle" class="preview-title">
+                Your media
+              </div>
+            </div>
+
+            <div class="ready">READY</div>
+
+          </div>
+
+          <video
+            id="videoPreview"
+            controls
+            playsinline
+            preload="metadata"
+          ></video>
+
+          <div id="previewActions" class="preview-actions"></div>
+
+        </div>
+
+      </section>
+
+      <!-- ================= FEATURES ================= -->
+
+      <section class="features">
+
+        <article class="feature">
+          <div class="feature-number">01</div>
+          <h3>No account</h3>
+          <p>
+            Your browser keeps your download history without
+            forcing you through a signup flow.
+          </p>
+        </article>
+
+        <article class="feature">
+          <div class="feature-number">02</div>
+          <h3>Direct processing</h3>
+          <p>
+            Links are processed through your own VEXDOU
+            backend instead of a third-party downloader page.
+          </p>
+        </article>
+
+        <article class="feature">
+          <div class="feature-number">03</div>
+          <h3>Play & save</h3>
+          <p>
+            Completed videos can be played directly from
+            History and Favorites.
+          </p>
+        </article>
+
+      </section>
+
+    </main>
+
+    <!-- ================= DOWNLOADS ================= -->
+
+    <section id="downloadsSection" class="section">
+
+      <div class="section-head">
+        <div>
+          <div class="eyebrow">YOUR MEDIA</div>
+          <h2>Downloads</h2>
+        </div>
+
+        <button id="downloadsRefresh" class="ghost">
+          Refresh
+        </button>
       </div>
+
       <div id="downloadsList" class="media-grid"></div>
+
     </section>
 
-    <section id="favoritesSection" class="content-section">
-      <div class="section-header">
-        <div><span class="panel-kicker">SAVED MEDIA</span><h2>Favorites</h2></div>
-        <span class="muted-label">Saved on this device</span>
+    <!-- ================= HISTORY ================= -->
+
+    <section id="historySection" class="section">
+
+      <div class="section-head">
+
+        <div>
+          <div class="eyebrow">YOUR BROWSER</div>
+          <h2>History</h2>
+        </div>
+
+        <button id="clearHistory" class="ghost">
+          Clear
+        </button>
+
       </div>
-      <div id="favoritesList" class="media-grid"></div>
+
+      <div id="historyList" class="history-list"></div>
+
     </section>
 
-    <footer class="footer">
+    <!-- ================= FAVORITES ================= -->
+
+    <section id="favoritesSection" class="section">
+
+      <div class="section-head">
+
+        <div>
+          <div class="eyebrow">SAVED MEDIA</div>
+          <h2>Favorites</h2>
+        </div>
+
+      </div>
+
+      <div id="favoritesList" class="media-grid"></div>
+
+    </section>
+
+    <!-- ================= FOOTER ================= -->
+
+    <footer>
       <span>VEXDOU Downloader</span>
-      <span>Fast public-media downloads</span>
+      <span>Fast · Private · Beautiful</span>
     </footer>
-  </main>
-</div>
 
-<div id="playerModal" class="modal" hidden>
-  <div class="modal-content" role="dialog" aria-modal="true" aria-label="Media player">
-    <button id="closeModal" class="close-modal" type="button" aria-label="Close">×</button>
-    <video id="modalVideo" controls playsinline preload="metadata"></video>
-    <h3 id="modalTitle"></h3>
-    <div id="modalActions"></div>
   </div>
-</div>
 
-<div id="installHelp" class="modal" hidden>
-  <div class="install-help-card">
-    <button id="closeInstallHelp" class="close-modal" type="button" aria-label="Close">×</button>
-    <div class="install-help-icon">↥</div>
-    <span class="panel-kicker">INSTALL VEXDOU</span>
-    <h2>Add VEXDOU to your home screen</h2>
-    <p id="installHelpText">If Chrome does not show the automatic install prompt, open the browser menu and choose <strong>Install app</strong> or <strong>Add to Home screen</strong>.</p>
-    <button id="installRetryBtn" class="download-btn help-btn" type="button">Try Install Again <b>→</b></button>
+  <!-- ================= PLAYER ================= -->
+
+  <div id="playerModal" class="modal">
+
+    <div class="modal-box">
+
+      <button id="closeModal" class="modal-close">
+        ×
+      </button>
+
+      <video
+        id="modalVideo"
+        controls
+        playsinline
+        preload="metadata"
+      ></video>
+
+      <div id="modalTitle" class="modal-title"></div>
+
+    </div>
+
   </div>
-</div>
 
-<script src="/static/app.js" defer></script>
+  <script src="/static/app.js" defer></script>
+
 </body>
-</html>
+  </html>
