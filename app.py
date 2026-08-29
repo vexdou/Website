@@ -1,17 +1,15 @@
-import asyncio
 import os
 import re
-import shutil
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import BackgroundTasks, Cookie, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Cookie, FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, HttpUrl
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, create_engine, select
+from sqlalchemy import DateTime, Integer, String, Text, create_engine, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 import yt_dlp
 
@@ -51,7 +49,10 @@ class Download(Base):
     kind: Mapped[str] = mapped_column(String(20), default="video")
     filename: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
 
 Base.metadata.create_all(engine)
 
@@ -87,7 +88,7 @@ def find_output(job_id: str) -> Path | None:
     matches = list(DOWNLOAD_DIR.glob(f"{job_id}.*"))
     return matches[0] if matches else None
 
-def run_download(job_id: str, visitor_id: str, url: str, kind: str):
+def run_download(job_id: str, url: str, kind: str):
     db = SessionLocal()
     item = db.scalar(select(Download).where(Download.job_id == job_id))
     try:
@@ -98,7 +99,6 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
         db.commit()
 
         outtmpl = str(DOWNLOAD_DIR / f"{job_id}.%(ext)s")
-        
         options = {
             "outtmpl": outtmpl,
             "noplaylist": True,
@@ -108,16 +108,10 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
             "retries": 5,
             "socket_timeout": 30,
             "format": "best",
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["android", "ios", "web"]
-                }
-            },
             "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
                 "Accept-Language": "en-US,en;q=0.5",
-            }
+            },
         }
 
         if kind == "audio":
@@ -140,17 +134,19 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
         item.status = "completed"
         item.error = None
         db.commit()
+
     except Exception as exc:
         item.status = "failed"
-        err_msg = str(exc)
-        if "Sign in to confirm" in err_msg or "bot" in err_msg.lower():
+        message = str(exc)
+        if "Sign in to confirm" in message or "bot" in message.lower():
             item.error = "YouTube wuxuu xannibay server-ka ku meel gaarka ah. Fadlan isku day markale."
         else:
-            item.error = f"Cillad: {err_msg[:100]}"
+            item.error = f"Cillad: {message[:100]}"
         db.commit()
-        for p in DOWNLOAD_DIR.glob(f"{job_id}.*"):
+
+        for path in DOWNLOAD_DIR.glob(f"{job_id}.*"):
             try:
-                p.unlink()
+                path.unlink()
             except OSError:
                 pass
     finally:
@@ -160,15 +156,15 @@ def run_download(job_id: str, visitor_id: str, url: str, kind: str):
 def home():
     return FileResponse(BASE_DIR / "templates" / "index.html")
 
-# Routing-ka loogu talagalay PWA Manifest iyo Service Worker oo leh Service-Worker-Allowed header
 @app.get("/manifest.json")
 def serve_manifest():
-    return FileResponse(BASE_DIR / "manifest.json", media_type="application/json")
+    return FileResponse(BASE_DIR / "manifest.json", media_type="application/manifest+json")
 
 @app.get("/sw.js")
 def serve_sw():
     response = FileResponse(BASE_DIR / "sw.js", media_type="application/javascript")
     response.headers["Service-Worker-Allowed"] = "/"
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return response
 
 @app.get("/api/health")
@@ -176,31 +172,39 @@ def health():
     return {"ok": True, "service": "vexdou-downloader"}
 
 @app.post("/api/download")
-def create_download(payload: DownloadRequest, background_tasks: BackgroundTasks, vexdou_visitor: str | None = Cookie(default=None)):
+def create_download(
+    payload: DownloadRequest,
+    background_tasks: BackgroundTasks,
+    vexdou_visitor: str | None = Cookie(default=None),
+):
     url = str(payload.url)
     kind = payload.kind.lower().strip()
+
     if kind not in {"video", "audio"}:
         raise HTTPException(400, "Invalid download type.")
+
     if not host_allowed(url):
-        raise HTTPException(400, "Boggan waxaa laga taageeraa YouTube, TikTok, Instagram, Facebook, Pinterest, iyo X.")
+        raise HTTPException(
+            400,
+            "Boggan waxaa laga taageeraa YouTube, TikTok, Instagram, Facebook, Pinterest, iyo X.",
+        )
 
     visitor_id = vexdou_visitor or uuid.uuid4().hex
     job_id = uuid.uuid4().hex
 
     db = SessionLocal()
-    item = Download(
+    db.add(Download(
         job_id=job_id,
         visitor_id=visitor_id,
         url=url,
         title="Downloading...",
         status="queued",
         kind=kind,
-    )
-    db.add(item)
+    ))
     db.commit()
     db.close()
 
-    background_tasks.add_task(run_download, job_id, visitor_id, url, kind)
+    background_tasks.add_task(run_download, job_id, url, kind)
 
     response = JSONResponse({
         "ok": True,
@@ -208,6 +212,7 @@ def create_download(payload: DownloadRequest, background_tasks: BackgroundTasks,
         "visitor_id": visitor_id,
         "status": "queued",
     })
+
     if not vexdou_visitor:
         response.set_cookie(
             "vexdou_visitor",
@@ -215,19 +220,23 @@ def create_download(payload: DownloadRequest, background_tasks: BackgroundTasks,
             max_age=60 * 60 * 24 * 365,
             httponly=True,
             samesite="lax",
-            secure=False,
+            secure=True,
         )
+
     return response
 
 @app.get("/api/download/{job_id}")
-def download_status(job_id: str, vexdou_visitor: str | None = Cookie(default=None)):
+def download_status(
+    job_id: str,
+    vexdou_visitor: str | None = Cookie(default=None),
+):
     if not vexdou_visitor:
         raise HTTPException(404, "Download not found.")
 
     db = SessionLocal()
     item = db.scalar(select(Download).where(
         Download.job_id == job_id,
-        Download.visitor_id == vexdou_visitor
+        Download.visitor_id == vexdou_visitor,
     ))
     db.close()
 
@@ -268,6 +277,7 @@ def history(vexdou_visitor: str | None = Cookie(default=None)):
         "created_at": x.created_at.isoformat() if x.created_at else None,
         "download_url": f"/api/file/{x.job_id}" if x.status == "completed" else None,
     } for x in items]
+
     db.close()
     return {"items": result}
 
@@ -280,7 +290,7 @@ def get_file(job_id: str, vexdou_visitor: str | None = Cookie(default=None)):
     item = db.scalar(select(Download).where(
         Download.job_id == job_id,
         Download.visitor_id == vexdou_visitor,
-        Download.status == "completed"
+        Download.status == "completed",
     ))
     db.close()
 
@@ -291,7 +301,10 @@ def get_file(job_id: str, vexdou_visitor: str | None = Cookie(default=None)):
     if not path.exists() or path.parent.resolve() != DOWNLOAD_DIR.resolve():
         raise HTTPException(404, "File not found.")
 
-    return FileResponse(path, filename=f"{safe_name(item.title)}.{path.suffix.lstrip('.')}")
+    return FileResponse(
+        path,
+        filename=f"{safe_name(item.title)}.{path.suffix.lstrip('.')}",
+    )
 
 @app.delete("/api/history")
 def clear_history(vexdou_visitor: str | None = Cookie(default=None)):
@@ -299,7 +312,10 @@ def clear_history(vexdou_visitor: str | None = Cookie(default=None)):
         return {"ok": True}
 
     db = SessionLocal()
-    items = db.scalars(select(Download).where(Download.visitor_id == vexdou_visitor)).all()
+    items = db.scalars(
+        select(Download).where(Download.visitor_id == vexdou_visitor)
+    ).all()
+
     for item in items:
         if item.filename:
             try:
@@ -307,6 +323,7 @@ def clear_history(vexdou_visitor: str | None = Cookie(default=None)):
             except OSError:
                 pass
         db.delete(item)
+
     db.commit()
     db.close()
     return {"ok": True}
