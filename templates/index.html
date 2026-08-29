@@ -8,19 +8,1035 @@ content="width=device-width, initial-scale=1, viewport-fit=cover"
 
 «»
 
-  <meta name="theme-color" content="#07070b"><meta
-name="description"
-content="Fast, clean and anonymous media downloader."
+  <meta name="theme-color" content="#050807">
+  <meta
+    name="description"
+    content="VEXDOU — Fast, clean and private media downloader."
+  >  <link rel="manifest" href="/manifest.json">  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="application-name" content="VEXDOU">  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta
+    name="apple-mobile-web-app-status-bar-style"
+    content="black-translucent"
+  >
+  <meta name="apple-mobile-web-app-title" content="VEXDOU">  <title>VEXDOU — Downloader</title>  <link rel="stylesheet" href="/static/styles.css">  <style>
+    /* =====================================================
+       VEXDOU NEW DESIGN
+       ===================================================== */
 
-«»
+    :root {
+      --bg: #050807;
+      --bg-soft: #09100d;
+      --card: rgba(13, 21, 18, .72);
+      --card-strong: rgba(16, 27, 23, .88);
 
-  <!-- PWA -->  <link rel="manifest" href="/manifest.json">  <!-- Android / Chrome -->  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="application-name" content="VEXDOU">  <!-- iOS -->  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="VEXDOU">  <title>VEXDOU — Downloader</title>  <link rel="stylesheet" href="/static/styles.css">
-</head><body>  <div class="noise"></div>
-  <div class="orb orb-a"></div>
-  <div class="orb orb-b"></div>  <!-- ================= NAVIGATION ================= -->  <header class="nav wrap"><a class="brand" href="/">
+      --green: #10b981;
+      --green-2: #059669;
+      --green-soft: rgba(16,185,129,.12);
+      --green-glow: rgba(16,185,129,.30);
+
+      --white: #f4f8f6;
+      --muted: #8c9b95;
+      --border: rgba(255,255,255,.075);
+
+      --radius: 24px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      background: var(--bg);
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--white);
+      background:
+        radial-gradient(
+          circle at 50% -10%,
+          rgba(16,185,129,.15),
+          transparent 38%
+        ),
+        radial-gradient(
+          circle at 0% 55%,
+          rgba(16,185,129,.055),
+          transparent 28%
+        ),
+        var(--bg);
+      font-family:
+        Inter,
+        ui-sans-serif,
+        system-ui,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+      overflow-x: hidden;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    button {
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    /* =====================================================
+       BACKGROUND
+       ===================================================== */
+
+    .noise {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: -2;
+      opacity: .035;
+      background-image:
+        url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.8'/%3E%3C/svg%3E");
+    }
+
+    .orb {
+      position: fixed;
+      width: 360px;
+      height: 360px;
+      border-radius: 50%;
+      pointer-events: none;
+      filter: blur(100px);
+      opacity: .12;
+      z-index: -3;
+    }
+
+    .orb-a {
+      background: #10b981;
+      top: -220px;
+      left: 50%;
+      transform: translateX(-50%);
+    }
+
+    .orb-b {
+      background: #047857;
+      right: -220px;
+      top: 42%;
+    }
+
+    .grid-bg {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: -4;
+      opacity: .035;
+      background-image:
+        linear-gradient(
+          rgba(255,255,255,.5) 1px,
+          transparent 1px
+        ),
+        linear-gradient(
+          90deg,
+          rgba(255,255,255,.5) 1px,
+          transparent 1px
+        );
+      background-size: 50px 50px;
+      mask-image: linear-gradient(
+        to bottom,
+        black,
+        transparent 75%
+      );
+    }
+
+    /* =====================================================
+       NAV
+       ===================================================== */
+
+    .nav {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 22px 20px;
+
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 11px;
+
+      font-size: 16px;
+      font-weight: 900;
+      letter-spacing: .16em;
+    }
+
+    .brand-mark {
+      width: 38px;
+      height: 38px;
+
+      display: grid;
+      place-items: center;
+
+      border-radius: 12px;
+
+      background:
+        linear-gradient(
+          145deg,
+          #19d391,
+          #087c5a
+        );
+
+      color: #03140e;
+
+      font-size: 19px;
+      font-weight: 1000;
+
+      box-shadow:
+        0 0 0 1px rgba(255,255,255,.1),
+        0 8px 30px rgba(16,185,129,.22);
+    }
+
+    .history-btn {
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.045);
+      color: #dce7e2;
+
+      padding: 10px 14px;
+      border-radius: 13px;
+
+      cursor: pointer;
+
+      transition:
+        .2s ease;
+    }
+
+    .history-btn:hover {
+      background: rgba(16,185,129,.1);
+      border-color: rgba(16,185,129,.28);
+    }
+
+    #historyCount {
+      display: inline-grid;
+      place-items: center;
+
+      min-width: 21px;
+      height: 21px;
+
+      margin-left: 6px;
+
+      border-radius: 99px;
+
+      background: rgba(16,185,129,.16);
+      color: #49dfa9;
+
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    /* =====================================================
+       HERO
+       ===================================================== */
+
+    .hero {
+      max-width: 900px;
+      margin: 0 auto;
+      padding:
+        78px 20px
+        54px;
+      text-align: center;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+
+      padding: 7px 11px;
+
+      border: 1px solid rgba(16,185,129,.16);
+      border-radius: 999px;
+
+      background: rgba(16,185,129,.055);
+
+      color: #74dcb5;
+
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: .18em;
+    }
+
+    .eyebrow span {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #22c58b;
+
+      box-shadow:
+        0 0 12px rgba(16,185,129,.9);
+    }
+
+    .hero h1 {
+      margin:
+        22px 0
+        18px;
+
+      font-size:
+        clamp(46px, 8vw, 86px);
+
+      line-height: .94;
+      letter-spacing: -.055em;
+      font-weight: 950;
+    }
+
+    .hero h1 em {
+      font-style: normal;
+
+      background:
+        linear-gradient(
+          110deg,
+          #fff 5%,
+          #6ee7b7 48%,
+          #10b981 100%
+        );
+
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .hero-copy {
+      max-width: 620px;
+      margin: 0 auto 36px;
+
+      color: var(--muted);
+
+      font-size:
+        clamp(14px, 2vw, 17px);
+
+      line-height: 1.75;
+    }
+
+    /* =====================================================
+       DOWNLOADER CARD
+       ===================================================== */
+
+    .downloader-card {
+      position: relative;
+
+      padding: 9px;
+
+      border-radius: 27px;
+
+      background:
+        linear-gradient(
+          145deg,
+          rgba(255,255,255,.085),
+          rgba(255,255,255,.025)
+        );
+
+      border: 1px solid rgba(255,255,255,.085);
+
+      box-shadow:
+        0 30px 90px rgba(0,0,0,.42),
+        0 0 60px rgba(16,185,129,.06);
+
+      backdrop-filter: blur(30px);
+      -webkit-backdrop-filter: blur(30px);
+    }
+
+    .downloader-card::before {
+      content: "";
+
+      position: absolute;
+      inset: -1px;
+
+      border-radius: inherit;
+
+      padding: 1px;
+
+      background:
+        linear-gradient(
+          135deg,
+          rgba(16,185,129,.25),
+          transparent 35%,
+          transparent 70%,
+          rgba(16,185,129,.08)
+        );
+
+      mask:
+        linear-gradient(#000 0 0) content-box,
+        linear-gradient(#000 0 0);
+
+      mask-composite: exclude;
+
+      pointer-events: none;
+    }
+
+    .input-row {
+      display: grid;
+
+      grid-template-columns:
+        minmax(0, 1fr)
+        105px
+        145px;
+
+      gap: 8px;
+    }
+
+    .input-shell {
+      min-width: 0;
+
+      display: flex;
+      align-items: center;
+      gap: 10px;
+
+      height: 58px;
+
+      padding: 0 14px;
+
+      border-radius: 18px;
+
+      background: rgba(0,0,0,.25);
+      border: 1px solid rgba(255,255,255,.06);
+
+      transition:
+        border-color .2s ease,
+        box-shadow .2s ease;
+    }
+
+    .input-shell:focus-within {
+      border-color:
+        rgba(16,185,129,.35);
+
+      box-shadow:
+        0 0 0 4px
+        rgba(16,185,129,.06);
+    }
+
+    .link-icon {
+      flex: 0 0 auto;
+
+      width: 31px;
+      height: 31px;
+
+      display: grid;
+      place-items: center;
+
+      border-radius: 10px;
+
+      background:
+        rgba(16,185,129,.09);
+
+      color: #53dcae;
+
+      font-size: 16px;
+    }
+
+    #urlInput {
+      min-width: 0;
+      width: 100%;
+
+      border: 0;
+      outline: 0;
+
+      background: transparent;
+
+      color: #fff;
+
+      font-size: 14px;
+    }
+
+    #urlInput::placeholder {
+      color: #65746e;
+    }
+
+    .clear {
+      border: 0;
+      background: transparent;
+
+      color: #718079;
+
+      font-size: 22px;
+
+      cursor: pointer;
+    }
+
+    #kind {
+      height: 58px;
+
+      border-radius: 18px;
+
+      padding: 0 14px;
+
+      outline: none;
+
+      color: #e7f1ed;
+
+      background: rgba(0,0,0,.27) !important;
+      border: 1px solid rgba(255,255,255,.06) !important;
+
+      cursor: pointer;
+    }
+
+    .download-btn {
+      height: 58px;
+
+      border: 0;
+      border-radius: 18px;
+
+      color: #02130d;
+
+      font-weight: 900;
+      font-size: 14px;
+
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 13px;
+
+      cursor: pointer;
+
+      background:
+        linear-gradient(
+          135deg,
+          #39e6a6,
+          #0ca678
+        ) !important;
+
+      box-shadow:
+        0 12px 30px rgba(16,185,129,.22);
+
+      transition:
+        transform .18s ease,
+        box-shadow .18s ease;
+    }
+
+    .download-btn b {
+      font-size: 20px;
+      line-height: 1;
+    }
+
+    .download-btn:hover {
+      transform: translateY(-2px);
+
+      box-shadow:
+        0 16px 36px rgba(16,185,129,.3);
+    }
+
+    .download-btn:active {
+      transform: translateY(0);
+    }
+
+    .supported {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 9px;
+
+      padding:
+        13px 8px
+        4px;
+
+      color: #6f7e77;
+
+      font-size: 10px;
+      letter-spacing: .04em;
+    }
+
+    .supported span:not(:first-child) {
+      color: #a6b5af;
+    }
+
+    .supported i {
+      color: #33423c;
+      font-style: normal;
+    }
+
+    /* =====================================================
+       STATUS
+       ===================================================== */
+
+    .status {
+      min-height: 26px;
+      margin-top: 16px;
+      color: #91a39b;
+      font-size: 13px;
+    }
+
+    /* =====================================================
+       PREVIEW
+       ===================================================== */
+
+    .preview-card {
+      margin-top: 24px !important;
+
+      overflow: hidden;
+
+      border-radius: 24px !important;
+
+      background:
+        linear-gradient(
+          145deg,
+          rgba(17,29,24,.86),
+          rgba(8,14,12,.78)
+        ) !important;
+
+      border: 1px solid rgba(255,255,255,.08) !important;
+
+      box-shadow:
+        0 30px 80px rgba(0,0,0,.38) !important;
+    }
+
+    #videoPreview {
+      display: block;
+      width: 100%;
+      max-height: 430px;
+
+      object-fit: contain;
+    }
+
+    /* =====================================================
+       FEATURES
+       ===================================================== */
+
+    .features {
+      max-width: 1050px;
+
+      margin: 0 auto;
+
+      padding:
+        30px 20px
+        80px;
+
+      display: grid;
+
+      grid-template-columns:
+        repeat(3, 1fr);
+
+      gap: 14px;
+    }
+
+    .features article {
+      position: relative;
+
+      padding: 25px;
+
+      min-height: 205px;
+
+      overflow: hidden;
+
+      background:
+        linear-gradient(
+          145deg,
+          rgba(20,32,27,.7),
+          rgba(10,16,14,.58)
+        ) !important;
+
+      border: 1px solid rgba(255,255,255,.065) !important;
+      border-radius: 22px !important;
+
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+
+      transition:
+        transform .25s ease,
+        border-color .25s ease;
+    }
+
+    .features article:hover {
+      transform: translateY(-5px);
+
+      border-color:
+        rgba(16,185,129,.2) !important;
+    }
+
+    .features article::after {
+      content: "";
+
+      position: absolute;
+
+      width: 120px;
+      height: 120px;
+
+      right: -50px;
+      bottom: -60px;
+
+      border-radius: 50%;
+
+      background:
+        rgba(16,185,129,.08);
+
+      filter: blur(25px);
+    }
+
+    .feature-icon {
+      width: 38px;
+      height: 38px;
+
+      display: grid;
+      place-items: center;
+
+      margin-bottom: 25px;
+
+      border-radius: 12px;
+
+      background:
+        rgba(16,185,129,.08);
+
+      border:
+        1px solid
+        rgba(16,185,129,.13);
+
+      color: #5bdbb0;
+
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .features h3 {
+      margin:
+        0 0
+        9px;
+
+      font-size: 16px;
+    }
+
+    .features p {
+      margin: 0;
+
+      color: #788982;
+
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    /* =====================================================
+       HISTORY
+       ===================================================== */
+
+    .history {
+      max-width: 1050px;
+
+      margin: 0 auto;
+
+      padding:
+        20px 20px
+        80px;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 20px;
+
+      margin-bottom: 22px;
+    }
+
+    .section-head h2 {
+      margin:
+        12px 0
+        0;
+
+      font-size:
+        clamp(27px, 5vw, 38px);
+
+      letter-spacing: -.035em;
+    }
+
+    .ghost {
+      border: 1px solid rgba(255,255,255,.08);
+
+      background: rgba(255,255,255,.035);
+
+      color: #9aa9a3;
+
+      padding: 9px 13px;
+
+      border-radius: 11px;
+
+      cursor: pointer;
+    }
+
+    .ghost:hover {
+      color: #fff;
+      border-color: rgba(16,185,129,.22);
+    }
+
+    .history-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .empty {
+      padding: 45px 20px;
+
+      text-align: center;
+
+      color: #64736c;
+
+      border: 1px dashed rgba(255,255,255,.07);
+      border-radius: 20px;
+
+      background: rgba(255,255,255,.018);
+    }
+
+    /* =====================================================
+       MODAL
+       ===================================================== */
+
+    .modal {
+      background:
+        rgba(2,7,5,.88) !important;
+
+      backdrop-filter: blur(22px) !important;
+      -webkit-backdrop-filter: blur(22px) !important;
+    }
+
+    .modal-content {
+      background:
+        linear-gradient(
+          145deg,
+          rgba(20,31,27,.94),
+          rgba(8,13,11,.94)
+        ) !important;
+
+      border:
+        1px solid
+        rgba(255,255,255,.09) !important;
+
+      border-radius: 25px !important;
+
+      box-shadow:
+        0 35px 100px rgba(0,0,0,.65) !important;
+    }
+
+    /* =====================================================
+       INSTALL BUTTON
+       ===================================================== */
+
+    #installAppBtn {
+      display: none;
+
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+
+      position: fixed;
+
+      right: 18px;
+      bottom:
+        calc(
+          18px +
+          env(safe-area-inset-bottom)
+        );
+
+      z-index: 9999;
+
+      min-height: 48px;
+
+      padding: 0 18px;
+
+      border-radius: 999px;
+
+      border:
+        1px solid
+        rgba(255,255,255,.14);
+
+      background:
+        linear-gradient(
+          135deg,
+          #22d393,
+          #07845e
+        );
+
+      color: #03130d;
+
+      font-size: 13px;
+      font-weight: 950;
+
+      box-shadow:
+        0 12px 35px
+        rgba(16,185,129,.32);
+
+      cursor: pointer;
+
+      animation:
+        installFloat 2.8s
+        ease-in-out infinite;
+    }
+
+    @keyframes installFloat {
+      0%, 100% {
+        transform: translateY(0);
+      }
+
+      50% {
+        transform: translateY(-4px);
+      }
+    }
+
+    #installAppBtn:hover {
+      box-shadow:
+        0 16px 42px
+        rgba(16,185,129,.42);
+    }
+
+    /* =====================================================
+       FOOTER
+       ===================================================== */
+
+    .footer {
+      max-width: 1050px;
+
+      margin: 0 auto;
+
+      padding:
+        30px 20px
+        45px;
+
+      border-top:
+        1px solid
+        rgba(255,255,255,.05);
+
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+
+      color: #596861;
+
+      font-size: 11px;
+    }
+
+    /* =====================================================
+       MOBILE
+       ===================================================== */
+
+    @media (max-width: 760px) {
+
+      .nav {
+        padding:
+          17px 15px;
+      }
+
+      .hero {
+        padding:
+          55px 15px
+          35px;
+      }
+
+      .hero h1 {
+        font-size:
+          clamp(45px, 14vw, 70px);
+      }
+
+      .hero-copy {
+        font-size: 13px;
+        line-height: 1.65;
+        margin-bottom: 27px;
+      }
+
+      .downloader-card {
+        padding: 8px;
+        border-radius: 22px;
+      }
+
+      .input-row {
+        grid-template-columns: 1fr;
+      }
+
+      .input-shell,
+      #kind,
+      .download-btn {
+        height: 55px;
+      }
+
+      #kind {
+        width: 100%;
+      }
+
+      .features {
+        grid-template-columns: 1fr;
+
+        padding:
+          20px 15px
+          60px;
+      }
+
+      .features article {
+        min-height: auto;
+      }
+
+      .history {
+        padding:
+          10px 15px
+          60px;
+      }
+
+      .section-head {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .footer {
+        padding:
+          25px 15px
+          35px;
+
+        flex-direction: column;
+      }
+
+      #installAppBtn {
+        right: 14px;
+        left: 14px;
+        bottom:
+          calc(
+            14px +
+            env(safe-area-inset-bottom)
+          );
+
+        width: auto;
+      }
+
+    }
+
+    @media (max-width: 390px) {
+
+      .brand {
+        font-size: 14px;
+      }
+
+      .brand-mark {
+        width: 34px;
+        height: 34px;
+      }
+
+      .history-btn {
+        padding: 9px 11px;
+        font-size: 12px;
+      }
+
+      .supported {
+        font-size: 9px;
+      }
+
+    }
+
+  </style></head><body>  <div class="noise"></div>
+  <div class="grid-bg"></div>  <div class="orb orb-a"></div>
+  <div class="orb orb-b"></div>  <!-- =====================================================
+       NAVIGATION
+       ===================================================== -->  <header class="nav wrap"><a class="brand" href="/">
   <span class="brand-mark">V</span>
   <span>VEXDOU</span>
 </a>
@@ -34,7 +1050,9 @@ content="Fast, clean and anonymous media downloader."
   <span id="historyCount">0</span>
 </button>
 
-  </header>  <!-- ================= MAIN ================= -->  <main><!-- HERO -->
+  </header>  <!-- =====================================================
+       MAIN
+       ===================================================== -->  <main><!-- HERO -->
 
 <section class="hero wrap">
 
@@ -49,39 +1067,22 @@ content="Fast, clean and anonymous media downloader."
   </h1>
 
   <p class="hero-copy">
-    Paste a public video link and get your media in a few moments.
-    No account. No signup.
+    Paste a public video link and get your media
+    in a few moments. No account. No signup.
   </p>
 
 
   <!-- DOWNLOADER -->
 
-  <div
-    class="downloader-card"
-    style="
-      background: rgba(18, 22, 31, 0.65);
-      backdrop-filter: blur(25px);
-      -webkit-backdrop-filter: blur(25px);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      box-shadow:
-        0 25px 50px rgba(0,0,0,0.5),
-        inset 0 1px 0 rgba(255,255,255,0.1);
-    "
-  >
+  <div class="downloader-card">
 
     <div class="input-row">
 
-      <div
-        class="input-shell"
-        style="
-          background: rgba(10, 12, 16, 0.6);
-          border: 1px solid rgba(255, 255, 255, 0.06);
-          backdrop-filter: blur(10px);
-          -webkit-backdrop-filter: blur(10px);
-        "
-      >
+      <div class="input-shell">
 
-        <span class="link-icon">↗</span>
+        <span class="link-icon">
+          ↗
+        </span>
 
         <input
           id="urlInput"
@@ -89,7 +1090,7 @@ content="Fast, clean and anonymous media downloader."
           autocomplete="off"
           inputmode="url"
           placeholder="Paste a TikTok, Facebook, X link…"
-          aria-label="Video URL"
+          aria-label="Media URL"
         >
 
         <button
@@ -108,13 +1109,6 @@ content="Fast, clean and anonymous media downloader."
       <select
         id="kind"
         aria-label="Download type"
-        style="
-          background: rgba(10, 12, 16, 0.6);
-          border: 1px solid rgba(255, 255, 255, 0.06);
-          color: #fff;
-          backdrop-filter: blur(10px);
-          -webkit-backdrop-filter: blur(10px);
-        "
       >
 
         <option value="video">
@@ -132,20 +1126,15 @@ content="Fast, clean and anonymous media downloader."
         id="downloadBtn"
         class="download-btn"
         type="button"
-        style="
-          background:
-            linear-gradient(
-              135deg,
-              #10b981 0%,
-              #059669 100%
-            );
-          box-shadow:
-            0 4px 20px rgba(16, 185, 129, 0.4);
-        "
       >
 
-        <span>Download</span>
-        <b>→</b>
+        <span>
+          Download
+        </span>
+
+        <b>
+          →
+        </b>
 
       </button>
 
@@ -181,23 +1170,12 @@ content="Fast, clean and anonymous media downloader."
   ></div>
 
 
-  <!-- VIDEO PREVIEW -->
+  <!-- PREVIEW -->
 
   <div
     id="previewCard"
     class="preview-card"
-    style="
-      display: none;
-      margin-top: 24px;
-      background: rgba(18, 22, 31, 0.75);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 20px;
-      padding: 18px;
-      backdrop-filter: blur(25px);
-      -webkit-backdrop-filter: blur(25px);
-      box-shadow: 0 20px 40px rgba(0,0,0,0.4);
-      text-align: left;
-    "
+    style="display:none;"
   >
 
     <video
@@ -205,17 +1183,11 @@ content="Fast, clean and anonymous media downloader."
       controls
       playsinline
       preload="metadata"
-      style="
-        width: 100%;
-        max-height: 380px;
-        border-radius: 12px;
-        background: #000;
-      "
     ></video>
 
     <div
       id="previewMeta"
-      style="margin-top: 12px;"
+      style="margin-top:12px;"
     ></div>
 
   </div>
@@ -223,19 +1195,13 @@ content="Fast, clean and anonymous media downloader."
 </section>
 
 
-<!-- ================= FEATURES ================= -->
+<!-- =====================================================
+     FEATURES
+     ===================================================== -->
 
 <section class="features wrap">
 
-  <article
-    style="
-      background: rgba(18, 22, 31, 0.4);
-      border: 1px solid rgba(255, 255, 255, 0.06);
-      backdrop-filter: blur(15px);
-      -webkit-backdrop-filter: blur(15px);
-      border-radius: 18px;
-    "
-  >
+  <article>
 
     <div class="feature-icon">
       01
@@ -253,15 +1219,7 @@ content="Fast, clean and anonymous media downloader."
   </article>
 
 
-  <article
-    style="
-      background: rgba(18, 22, 31, 0.4);
-      border: 1px solid rgba(255, 255, 255, 0.06);
-      backdrop-filter: blur(15px);
-      -webkit-backdrop-filter: blur(15px);
-      border-radius: 18px;
-    "
-  >
+  <article>
 
     <div class="feature-icon">
       02
@@ -279,15 +1237,7 @@ content="Fast, clean and anonymous media downloader."
   </article>
 
 
-  <article
-    style="
-      background: rgba(18, 22, 31, 0.4);
-      border: 1px solid rgba(255, 255, 255, 0.06);
-      backdrop-filter: blur(15px);
-      -webkit-backdrop-filter: blur(15px);
-      border-radius: 18px;
-    "
-  >
+  <article>
 
     <div class="feature-icon">
       03
@@ -307,7 +1257,9 @@ content="Fast, clean and anonymous media downloader."
 </section>
 
 
-<!-- ================= HISTORY ================= -->
+<!-- =====================================================
+     HISTORY
+     ===================================================== -->
 
 <section
   id="historySection"
@@ -353,37 +1305,29 @@ content="Fast, clean and anonymous media downloader."
 
 </section>
 
-  </main>  <!-- ================= VIDEO MODAL ================= -->  <div
+  </main>  <!-- =====================================================
+       VIDEO PLAYER MODAL
+       ===================================================== -->  <div
     id="playerModal"
     class="modal"
     style="
-      display: none;
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(7, 7, 11, 0.85);
-      backdrop-filter: blur(15px);
-      -webkit-backdrop-filter: blur(15px);
-      z-index: 1000;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
+      display:none;
+      position:fixed;
+      inset:0;
+      width:100%;
+      height:100%;
+      z-index:1000;
+      align-items:center;
+      justify-content:center;
+      padding:20px;
     "
   ><div
   class="modal-content"
   style="
-    background: rgba(18, 22, 31, 0.85);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    padding: 24px;
-    border-radius: 24px;
-    max-width: 500px;
-    width: 100%;
-    position: relative;
-    backdrop-filter: blur(25px);
-    -webkit-backdrop-filter: blur(25px);
-    box-shadow: 0 25px 60px rgba(0,0,0,0.6);
+    padding:24px;
+    max-width:500px;
+    width:100%;
+    position:relative;
   "
 >
 
@@ -393,20 +1337,20 @@ content="Fast, clean and anonymous media downloader."
     type="button"
     aria-label="Close video"
     style="
-      position: absolute;
-      top: 14px;
-      right: 14px;
-      background: rgba(255,255,255,0.08);
-      border: none;
-      color: #fff;
-      width: 32px;
-      height: 32px;
-      border-radius: 50%;
-      font-size: 18px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      position:absolute;
+      top:14px;
+      right:14px;
+      background:rgba(255,255,255,.08);
+      border:none;
+      color:#fff;
+      width:32px;
+      height:32px;
+      border-radius:50%;
+      font-size:18px;
+      cursor:pointer;
+      display:flex;
+      align-items:center;
+      justify-content:center;
     "
   >
     ×
@@ -419,10 +1363,10 @@ content="Fast, clean and anonymous media downloader."
     playsinline
     preload="metadata"
     style="
-      width: 100%;
-      border-radius: 14px;
-      background: #000;
-      margin-top: 10px;
+      width:100%;
+      border-radius:14px;
+      background:#000;
+      margin-top:10px;
     "
   ></video>
 
@@ -430,76 +1374,31 @@ content="Fast, clean and anonymous media downloader."
   <h3
     id="modalTitle"
     style="
-      color: #fff;
-      font-size: 14px;
-      margin-top: 14px;
-      word-break: break-all;
+      color:#fff;
+      font-size:14px;
+      margin-top:14px;
+      word-break:break-all;
     "
   ></h3>
 
 </div>
 
-  </div>  <!-- ================= INSTALL APP BUTTON ================= --><button
+  </div>  <!-- =====================================================
+       INSTALL APP
+       ===================================================== --><button
 id="installAppBtn"
 type="button"
 hidden
 aria-label="Install VEXDOU App"
-style="
-display: none;
-position: fixed;
-bottom: calc(20px + env(safe-area-inset-bottom));
-right: 20px;
-z-index: 9999;
-
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-
-  padding: 13px 20px;
-
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 999px;
-
-  background:
-    linear-gradient(
-      135deg,
-      #10b981 0%,
-      #059669 100%
-    );
-
-  color: #fff;
-
-  font-family: inherit;
-  font-size: 14px;
-  font-weight: 800;
-
-  box-shadow:
-    0 8px 30px rgba(16,185,129,0.35);
-
-  cursor: pointer;
-
-  -webkit-tap-highlight-color: transparent;
-
-  transition:
-    transform .2s ease,
-    box-shadow .2s ease,
-    opacity .2s ease;
-"
 
 «»
 
-<span
-  aria-hidden="true"
-  style="font-size:17px;"
->
-  📲
-</span>
+<span>📲</span>
+<span>Install App</span>
 
-<span>
-  Install App
-</span>
-
-  </button>  <!-- ================= FOOTER ================= -->  <footer class="wrap footer"><span>
+  </button>  <!-- =====================================================
+       FOOTER
+       ===================================================== -->  <footer class="wrap footer"><span>
   VEXDOU Downloader
 </span>
 
@@ -507,31 +1406,28 @@ z-index: 9999;
   Built for fast public-media downloads
 </span>
 
-  </footer>  <!-- ================= PWA INSTALL SYSTEM ================= -->  <script>
+  </footer>  <!-- =====================================================
+       PWA INSTALL SYSTEM
+       ===================================================== -->  <script>
+
     (() => {
 
       "use strict";
 
 
-      /*
-       * ============================================
-       * VEXDOU PWA INSTALL SYSTEM
-       * Android Chrome optimized
-       * ============================================
-       */
-
       let deferredPrompt = null;
 
       const installBtn =
-        document.getElementById("installAppBtn");
+        document.getElementById(
+          "installAppBtn"
+        );
 
 
       /*
-       * Check if the website is already
-       * running as an installed PWA.
+       * Detect installed PWA
        */
 
-      function isAppInstalled() {
+      function isInstalled() {
 
         return (
           window.matchMedia(
@@ -549,7 +1445,7 @@ z-index: 9999;
 
 
       /*
-       * Hide Install button
+       * Hide button
        */
 
       function hideInstallButton() {
@@ -557,13 +1453,14 @@ z-index: 9999;
         if (!installBtn) return;
 
         installBtn.hidden = true;
+
         installBtn.style.display = "none";
 
       }
 
 
       /*
-       * Show Install button
+       * Show button
        */
 
       function showInstallButton() {
@@ -572,10 +1469,11 @@ z-index: 9999;
 
         if (
           deferredPrompt &&
-          !isAppInstalled()
+          !isInstalled()
         ) {
 
           installBtn.hidden = false;
+
           installBtn.style.display = "flex";
 
         }
@@ -587,24 +1485,16 @@ z-index: 9999;
        * Initial state
        */
 
-      if (isAppInstalled()) {
-
-        hideInstallButton();
-
-      } else {
-
-        hideInstallButton();
-
-      }
+      hideInstallButton();
 
 
       /*
-       * ============================================
-       * SERVICE WORKER
-       * ============================================
+       * Register Service Worker
        */
 
-      if ("serviceWorker" in navigator) {
+      if (
+        "serviceWorker" in navigator
+      ) {
 
         window.addEventListener(
           "load",
@@ -622,7 +1512,7 @@ z-index: 9999;
                 registration => {
 
                   console.log(
-                    "VEXDOU Service Worker registered:",
+                    "VEXDOU PWA:",
                     registration.scope
                   );
 
@@ -633,7 +1523,7 @@ z-index: 9999;
                 error => {
 
                   console.error(
-                    "VEXDOU Service Worker registration failed:",
+                    "PWA registration failed:",
                     error
                   );
 
@@ -647,41 +1537,16 @@ z-index: 9999;
 
 
       /*
-       * ============================================
-       * CHROME ANDROID INSTALL PROMPT
-       * ============================================
-       *
-       * Chrome fires this event when the website
-       * meets its installability requirements.
+       * Chrome Android install event
        */
 
       window.addEventListener(
         "beforeinstallprompt",
         event => {
 
-          console.log(
-            "VEXDOU can be installed"
-          );
-
-          /*
-           * Prevent Chrome from showing
-           * its automatic mini-infobar.
-           */
-
           event.preventDefault();
 
-
-          /*
-           * Save the event so our own
-           * Install App button can trigger it.
-           */
-
           deferredPrompt = event;
-
-
-          /*
-           * Display custom Install button.
-           */
 
           showInstallButton();
 
@@ -690,178 +1555,127 @@ z-index: 9999;
 
 
       /*
-       * ============================================
-       * INSTALL BUTTON
-       * ============================================
+       * Install button click
        */
 
-      if (installBtn) {
+      installBtn?.addEventListener(
+        "click",
+        async () => {
 
-        installBtn.addEventListener(
-          "click",
-          async () => {
+          if (!deferredPrompt) {
 
-            /*
-             * No install prompt available.
-             */
+            console.log(
+              "Install prompt unavailable"
+            );
 
-            if (!deferredPrompt) {
-
-              console.log(
-                "Install prompt is not available yet."
-              );
-
-              return;
-
-            }
-
-
-            /*
-             * Prevent multiple clicks.
-             */
-
-            installBtn.disabled = true;
-
-            installBtn.style.opacity = "0.7";
-
-
-            try {
-
-              /*
-               * Open Android Chrome install dialog.
-               */
-
-              await deferredPrompt.prompt();
-
-
-              /*
-               * Wait for user's decision.
-               */
-
-              const choice =
-                await deferredPrompt.userChoice;
-
-
-              console.log(
-                "VEXDOU install result:",
-                choice.outcome
-              );
-
-
-            } catch (error) {
-
-              console.error(
-                "VEXDOU install error:",
-                error
-              );
-
-            }
-
-
-            /*
-             * Prompt can only be used once.
-             */
-
-            deferredPrompt = null;
-
-
-            /*
-             * Reset button.
-             */
-
-            installBtn.disabled = false;
-            installBtn.style.opacity = "1";
-
-
-            /*
-             * Hide after prompt.
-             */
-
-            hideInstallButton();
+            return;
 
           }
-        );
 
-      }
+
+          installBtn.disabled = true;
+
+
+          try {
+
+            await deferredPrompt.prompt();
+
+            const result =
+              await deferredPrompt.userChoice;
+
+            console.log(
+              "VEXDOU install:",
+              result.outcome
+            );
+
+          } catch (error) {
+
+            console.error(
+              "Install error:",
+              error
+            );
+
+          }
+
+
+          deferredPrompt = null;
+
+          installBtn.disabled = false;
+
+          hideInstallButton();
+
+        }
+      );
 
 
       /*
-       * ============================================
-       * APP INSTALLED
-       * ============================================
+       * Installation completed
        */
 
       window.addEventListener(
         "appinstalled",
         () => {
 
-          console.log(
-            "VEXDOU was installed successfully."
-          );
-
-
           deferredPrompt = null;
 
           hideInstallButton();
+
+          console.log(
+            "VEXDOU installed"
+          );
 
         }
       );
 
 
       /*
-       * ============================================
-       * DISPLAY MODE CHANGE
-       * ============================================
+       * Standalone detection
        */
 
-      const standaloneMedia =
+      const standalone =
         window.matchMedia(
           "(display-mode: standalone)"
         );
 
 
-      function handleDisplayModeChange() {
+      const updateInstallState =
+        () => {
 
-        if (isAppInstalled()) {
+          if (isInstalled()) {
 
-          hideInstallButton();
+            hideInstallButton();
 
-        } else {
+          } else {
 
-          showInstallButton();
+            showInstallButton();
 
-        }
+          }
 
-      }
+        };
 
 
       if (
-        standaloneMedia.addEventListener
+        standalone.addEventListener
       ) {
 
-        standaloneMedia.addEventListener(
+        standalone.addEventListener(
           "change",
-          handleDisplayModeChange
+          updateInstallState
         );
 
       } else if (
-        standaloneMedia.addListener
+        standalone.addListener
       ) {
 
-        standaloneMedia.addListener(
-          handleDisplayModeChange
+        standalone.addListener(
+          updateInstallState
         );
 
       }
 
 
       /*
-       * ============================================
-       * PAGE VISIBILITY
-       * ============================================
-       *
-       * Useful when user installs the app and
-       * returns to the browser.
+       * Hide after returning from installation
        */
 
       document.addEventListener(
@@ -869,8 +1683,9 @@ z-index: 9999;
         () => {
 
           if (
-            document.visibilityState === "visible" &&
-            isAppInstalled()
+            document.visibilityState ===
+            "visible" &&
+            isInstalled()
           ) {
 
             hideInstallButton();
@@ -880,7 +1695,7 @@ z-index: 9999;
         }
       );
 
-
     })();
-  </script>  <!-- ================= MAIN APP JS ================= -->  <script src="/static/app.js"></script></body>
+
+  </script>  <!-- MAIN APP -->  <script src="/static/app.js"></script></body>
 </html>
