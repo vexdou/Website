@@ -79,12 +79,12 @@ def opts(job, kind, p):
             'User-Agent': UA,
             'Accept-Language': 'en-US,en;q=0.9',
         },
-        'format': 'best[ext=mp4]/best'
+        'format': 'best/bestvideo+bestaudio' if kind == 'video' else 'bestaudio/best'
     }
     if p == 'youtube':
         o['extractor_args'] = {'youtube': {'player_client': ['web', 'android']}}
     if kind == 'audio':
-        o.update(format='bestaudio/best', postprocessors=[{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}])
+        o['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}]
     return o
 
 def s3():
@@ -194,7 +194,7 @@ async def lifespan(app: FastAPI):
     yield
 
 # --- FASTAPI APP ---
-app = FastAPI(title='VEXDOU Downloader', version='3.1.0', lifespan=lifespan)
+app = FastAPI(title='VEXDOU Downloader', version='3.3.0', lifespan=lifespan)
 
 if (BASE_DIR / 'static').exists():
     app.mount('/static', StaticFiles(directory=BASE_DIR / 'static'), name='static')
@@ -282,14 +282,14 @@ def history(vexdou_visitor: str | None = Cookie(None)):
 @app.get('/api/file/{job}')
 def file(job: str, vexdou_visitor: str | None = Cookie(None)):
     if not vexdou_visitor: raise HTTPException(404, 'File not found.')
-    db = SessionLocal()
+    db.session = SessionLocal() # type: ignore
     try:
-        x = db.scalar(select(Download).where(Download.job_id == job, Download.visitor_id == vexdou_visitor, Download.status == 'completed'))
+        x = db.session.scalar(select(Download).where(Download.job_id == job, Download.visitor_id == vexdou_visitor, Download.status == 'completed'))
         if not x: raise HTTPException(404, 'File not found.')
         u = media_url(x, 900)
         if not u: raise HTTPException(404, 'File not found.')
         return RedirectResponse(u, 302)
-    finally: db.close()
+    finally: db.session.close() # type: ignore
 
 @app.delete('/api/history')
 def clear(vexdou_visitor: str | None = Cookie(None)):
