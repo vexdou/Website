@@ -1,39 +1,14 @@
-FROM python:3.13-slim
+FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    DENO_INSTALL=/usr/local
+    WEB_CONCURRENCY=1
 
-# System dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    ca-certificates \
-    curl \
-    git \
-    unzip \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Deno
-RUN curl -fsSL https://deno.land/install.sh | sh
-
-ENV PATH="/usr/local/bin:${PATH}"
-
-# Verify installations
-RUN deno --version && \
-    ffmpeg -version
-
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-
-# Install Python dependencies first for better Docker caching
 COPY requirements.txt .
-
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy application
+RUN pip install -r requirements.txt
 COPY . .
-
-# Render uses SERVICE_ROLE:
-# web    -> FastAPI/Uvicorn
-# worker -> background downloader
-CMD ["sh", "-c", "if [ \"${SERVICE_ROLE:-web}\" = \"worker\" ]; then exec python worker.py; else exec uvicorn app:app --host 0.0.0.0 --port ${PORT:-10000}; fi"]
+EXPOSE 10000
+CMD ["sh","-c","uvicorn app:app --host 0.0.0.0 --port ${PORT:-10000}"]

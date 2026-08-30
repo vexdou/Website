@@ -3,11 +3,8 @@ services:
     name: vexdou-web
     runtime: docker
     plan: free
-    dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
     envVars:
-      - key: SERVICE_ROLE
-        value: web
       - key: DATABASE_URL
         sync: false
       - key: R2_ENDPOINT
@@ -20,23 +17,7 @@ services:
         sync: false
       - key: R2_REGION
         value: auto
-  - type: worker
-    name: vexdou-worker
-    runtime: docker
-    plan: starter
-    dockerfilePath: ./Dockerfile
-    envVars:
-      - key: SERVICE_ROLE
-        value: worker
-      - key: DATABASE_URL
-        sync: false
-      - key: R2_ENDPOINT
-        sync: false
-      - key: R2_ACCESS_KEY_ID
-        sync: false
-      - key: R2_SECRET_ACCESS_KEY
-        sync: false
-      - key: R2_BUCKET
-        sync: false
-      - key: R2_REGION
-        value: auto
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: WORKER_POLL_SECONDS
+        value: "0.7"
