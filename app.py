@@ -49,7 +49,7 @@ Base.metadata.create_all(engine)
 # --- WORKER ENGINE ---
 WORK = Path('/tmp/vexdou')
 WORK.mkdir(parents=True, exist_ok=True)
-UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36'
+UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 def host(url):
     return (urlparse(url).hostname or '').lower()
@@ -58,8 +58,8 @@ def plat(url):
     h = host(url)
     if 'youtube' in h or 'youtu.be' in h: return 'youtube'
     if 'tiktok' in h: return 'tiktok'
-    if 'instagram' in h: return 'instagram'
-    if 'facebook' in h or 'fb.watch' in h: return 'facebook'
+    if 'instagram' in h or 'instagr.am' in h: return 'instagram'
+    if 'facebook' in h or 'fb.watch' in h or 'fb.me' in h: return 'facebook'
     if 'pinterest' in h or 'pin.it' in h: return 'pinterest'
     return 'x'
 
@@ -69,22 +69,22 @@ def opts(job, kind, p):
         'noplaylist': True,
         'quiet': True,
         'no_warnings': True,
-        'retries': 5,
-        'fragment_retries': 5,
-        'file_access_retries': 5,
-        'socket_timeout': 45,
+        'retries': 3,
+        'fragment_retries': 3,
+        'socket_timeout': 30,
         'skip_unavailable_fragments': True,
         'restrictfilenames': True,
         'windowsfilenames': True,
-        'impersonate': 'chrome',
         'http_headers': {
             'User-Agent': UA,
-            'Referer': {'youtube': 'https://www.youtube.com/', 'tiktok': 'https://www.tiktok.com/', 'instagram': 'https://www.instagram.com/', 'facebook': 'https://www.facebook.com/', 'pinterest': 'https://www.pinterest.com/', 'x': 'https://x.com/'}.get(p, '')
+            'Accept-Language': 'en-US,en;q=0.9',
         },
         'format': 'best[ext=mp4]/best'
     }
-    if p == 'youtube': o['extractor_args'] = {'youtube': {'player_client': ['web', 'android']}}
-    if kind == 'audio': o.update(format='bestaudio/best', postprocessors=[{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}])
+    if p == 'youtube':
+        o['extractor_args'] = {'youtube': {'player_client': ['web', 'android']}}
+    if kind == 'audio':
+        o.update(format='bestaudio/best', postprocessors=[{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}])
     return o
 
 def s3():
@@ -115,7 +115,10 @@ def claim():
 def fail(job, msg):
     db = SessionLocal()
     try:
-        db.execute(update(Download).where(Download.job_id == job).values(status='failed', error=str(msg)[:1000]))
+        clean_msg = str(msg).strip()
+        if len(clean_msg) > 250:
+            clean_msg = clean_msg[:250] + "..."
+        db.execute(update(Download).where(Download.job_id == job).values(status='failed', error=clean_msg))
         db.commit()
     finally:
         db.close()
@@ -133,16 +136,17 @@ def process(job_id: str, kind: str):
 
     try:
         p = plat(url)
-        log.info('Downloading %s %s', job_id, p)
+        log.info('Downloading %s from platform %s (URL: %s)', job_id, p, url)
+        
         with yt_dlp.YoutubeDL(opts(job_id, kind, p)) as y: 
             info = y.extract_info(url, download=True)
             
-        files = [p for p in WORK.glob(f'{job_id}.*') if p.is_file() and p.suffix not in {'.part', '.ytdl'}]
+        files = [f for f in WORK.glob(f'{job_id}.*') if f.is_file() and f.suffix not in {'.part', '.ytdl'}]
         if not files: 
-            raise RuntimeError('No media file was created.')
-        media = max(files, key=lambda p: p.stat().st_size)
+            raise RuntimeError('No media file was created by downloader.')
+        media = max(files, key=lambda f: f.stat().st_size)
         if media.stat().st_size <= 0: 
-            raise RuntimeError('Media file is empty.')
+            raise RuntimeError('Downloaded media file is empty.')
             
         key = f"media/{datetime.now(timezone.utc):%Y/%m/%d}/{uuid.uuid4().hex}{media.suffix.lower()}"
         ctype = mimetypes.guess_type(media.name)[0] or ('audio/mpeg' if kind == 'audio' else 'video/mp4')
@@ -163,9 +167,9 @@ def process(job_id: str, kind: str):
             db.commit()
         finally:
             db.close()
-        log.info('Completed %s', job_id)
+        log.info('Completed job %s', job_id)
     except Exception as e:
-        log.exception('Failed %s', job_id)
+        log.exception('Failed job %s: %s', job_id, e)
         fail(job_id, e)
     finally:
         cleanup(job_id)
@@ -190,12 +194,12 @@ async def lifespan(app: FastAPI):
     yield
 
 # --- FASTAPI APP ---
-app = FastAPI(title='VEXDOU Downloader', version='3.0.0', lifespan=lifespan)
+app = FastAPI(title='VEXDOU Downloader', version='3.1.0', lifespan=lifespan)
 
 if (BASE_DIR / 'static').exists():
     app.mount('/static', StaticFiles(directory=BASE_DIR / 'static'), name='static')
 
-HOSTS = {'youtube.com', 'youtu.be', 'tiktok.com', 'instagram.com', 'instagr.am', 'facebook.com', 'fb.watch', 'pinterest.com', 'pin.it', 'twitter.com', 'x.com'}
+HOSTS = {'youtube.com', 'youtu.be', 'tiktok.com', 'instagram.com', 'instagr.am', 'facebook.com', 'fb.watch', 'fb.me', 'pinterest.com', 'pin.it', 'twitter.com', 'x.com'}
 
 class Req(BaseModel):
     url: HttpUrl
