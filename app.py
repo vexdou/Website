@@ -46,7 +46,7 @@ class Download(Base):
 
 Base.metadata.create_all(engine)
 
-# --- WORKER ENGINE (Runs inside background thread) ---
+# --- WORKER ENGINE ---
 WORK = Path('/tmp/vexdou')
 WORK.mkdir(parents=True, exist_ok=True)
 UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36'
@@ -99,11 +99,18 @@ def claim():
     db = SessionLocal()
     try:
         x = db.scalar(select(Download).where(Download.status == 'queued').order_by(Download.id).limit(1))
-        if not x: return None
-        r = db.execute(update(Download).where(Download.id == x.id, Download.status == 'queued').values(status='downloading', error=None))
-        if r.rowcount != 1: db.rollback(); return None
-        db.commit(); return x
-    finally: db.close()
+        if not x: 
+            return None, None
+        job_id = x.job_id
+        kind = x.kind
+        r = db.execute(update(Download).where(Download.job_id == job_id, Download.status == 'queued').values(status='downloading', error=None))
+        if r.rowcount != 1: 
+            db.rollback()
+            return None, None
+        db.commit()
+        return job_id, kind
+    finally: 
+        db.close()
 
 def fail(job, msg):
     db = SessionLocal()
@@ -113,38 +120,63 @@ def fail(job, msg):
     finally:
         db.close()
 
-def process(x):
-    job = x.job_id; cleanup(job)
+def process(job_id: str, kind: str):
+    cleanup(job_id)
+    db = SessionLocal()
     try:
-        p = plat(x.url); log.info('Downloading %s %s', job, p)
-        with yt_dlp.YoutubeDL(opts(job, x.kind, p)) as y: info = y.extract_info(x.url, download=True)
-        files = [p for p in WORK.glob(f'{job}.*') if p.is_file() and p.suffix not in {'.part', '.ytdl'}]
-        if not files: raise RuntimeError('No media file was created.')
+        x = db.scalar(select(Download).where(Download.job_id == job_id))
+        if not x: 
+            return
+        url = x.url
+    finally:
+        db.close()
+
+    try:
+        p = plat(url)
+        log.info('Downloading %s %s', job_id, p)
+        with yt_dlp.YoutubeDL(opts(job_id, kind, p)) as y: 
+            info = y.extract_info(url, download=True)
+            
+        files = [p for p in WORK.glob(f'{job_id}.*') if p.is_file() and p.suffix not in {'.part', '.ytdl'}]
+        if not files: 
+            raise RuntimeError('No media file was created.')
         media = max(files, key=lambda p: p.stat().st_size)
-        if media.stat().st_size <= 0: raise RuntimeError('Media file is empty.')
+        if media.stat().st_size <= 0: 
+            raise RuntimeError('Media file is empty.')
+            
         key = f"media/{datetime.now(timezone.utc):%Y/%m/%d}/{uuid.uuid4().hex}{media.suffix.lower()}"
-        ctype = mimetypes.guess_type(media.name)[0] or ('audio/mpeg' if x.kind == 'audio' else 'video/mp4')
+        ctype = mimetypes.guess_type(media.name)[0] or ('audio/mpeg' if kind == 'audio' else 'video/mp4')
+        
         s3().upload_file(str(media), os.environ['R2_BUCKET'], key, ExtraArgs={'ContentType': ctype, 'CacheControl': 'public,max-age=3600'})
+        
         db = SessionLocal()
         try:
-            db.execute(update(Download).where(Download.job_id == job).values(title=re.sub(r'\s+', ' ', info.get('title') or 'Media')[:160], thumbnail=info.get('thumbnail'), filename=media.name, object_key=key, content_type=ctype, status='completed', error=None))
+            db.execute(update(Download).where(Download.job_id == job_id).values(
+                title=re.sub(r'\s+', ' ', info.get('title') or 'Media')[:160], 
+                thumbnail=info.get('thumbnail'), 
+                filename=media.name, 
+                object_key=key, 
+                content_type=ctype, 
+                status='completed', 
+                error=None
+            ))
             db.commit()
         finally:
             db.close()
-        log.info('Completed %s', job)
+        log.info('Completed %s', job_id)
     except Exception as e:
-        log.exception('Failed %s', job)
-        fail(job, e)
+        log.exception('Failed %s', job_id)
+        fail(job_id, e)
     finally:
-        cleanup(job)
+        cleanup(job_id)
 
 def background_worker_loop():
     log.info("Background worker started inside Web Service container.")
     while True:
         try:
-            x = claim()
-            if x:
-                process(x)
+            job_id, kind = claim()
+            if job_id:
+                process(job_id, kind)
             else:
                 time.sleep(float(os.getenv('WORKER_POLL_SECONDS', '1')))
         except Exception as e:
