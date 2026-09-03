@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: vexdou-web
+    name: quickdl-web
     runtime: docker
     plan: free
     healthCheckPath: /api/health
@@ -17,7 +17,7 @@ services:
         sync: false
       - key: R2_REGION
         value: auto
-      - key: WEB_CONCURRENCY
-        value: "1"
+      - key: DISABLE_EMBEDDED_WORKER
+        value: "0"
       - key: WORKER_POLL_SECONDS
         value: "0.7"
