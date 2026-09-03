@@ -1,17 +1,21 @@
 # QuickDL
 
-Render-ready public media downloader using FastAPI, yt-dlp, PostgreSQL and Cloudflare R2.
+Modern FastAPI + yt-dlp media downloader for one Render Web Service.
 
-## Required Render environment variables
-- DATABASE_URL
-- R2_ENDPOINT
-- R2_ACCESS_KEY_ID
-- R2_SECRET_ACCESS_KEY
-- R2_BUCKET
+## Storage
+R2 is not required. Completed files are temporarily stored in `/tmp/quickdl` and served directly to the same visitor. Render Free storage is ephemeral, so users should save files promptly.
 
-The free Render web service runs an embedded single worker so a separate paid Background Worker is not required. Render's free web service is suitable for testing, but long media jobs consume CPU/RAM/bandwidth.
+## History behavior
+History is success-only: queued, downloading and failed jobs never appear in History. The UI shows relative download time (`Now`, `1 day ago`, etc.) and exact `day/month/year · time` for older items.
 
-The downloader accepts public HTTP/HTTPS URLs. yt-dlp decides whether a public website URL has a supported extractor. Login-only, DRM-protected, or sites that block automated access may still fail.
+## Features
+- Video / MP3
+- In-page video/audio preview
+- Clear input immediately after a download starts
+- Multiple downloads without refreshing
+- History and favorites
+- PWA
+- Complaint/support email: Cosrumer@quickdl.site
 
-## Local
-`uvicorn app:app --host 0.0.0.0 --port 10000`
+## Required Render variable
+`DATABASE_URL`
