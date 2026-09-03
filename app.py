@@ -129,6 +129,9 @@ def ytdlp_options(job, kind, youtube_embedded=False):
         "format": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b" if kind == "video" else "ba/b",
         "merge_output_format": "mp4" if kind == "video" else None,
         "max_filesize": MAX_FILE_MB * 1024 * 1024,
+        # YouTube now relies on yt-dlp EJS challenge solving. Node 22 is
+        # explicitly enabled here because current yt-dlp requires Node >=22.
+        "js_runtimes": {"node": {}},
     }
     # YouTube increasingly protects some normal web requests with sign-in/PO-token
     # checks. The embedded client is an official yt-dlp client intended for videos
@@ -264,7 +267,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="9.1.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="9.2.0", lifespan=lifespan)
 
 @app.get("/")
 def home(): return FileResponse(BASE / "templates" / "index.html")
@@ -283,7 +286,7 @@ def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "9.1.0"}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "9.2.0"}
     finally: db.close()
 
 class DownloadRequest(BaseModel):
