@@ -1,13 +1,6 @@
 services:
   - type: web
     name: quickdl
-    runtime: docker
-    plan: free
+    env: docker
     healthCheckPath: /api/health
-    envVars:
-      - key: DATABASE_URL
-        sync: false
-      - key: MAX_FILE_MB
-        value: "300"
-      - key: KEEP_FILE_HOURS
-        value: "6"
+    autoDeploy: true
