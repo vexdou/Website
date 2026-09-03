@@ -1,12 +1,34 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#050a0a"><meta name="description" content="QuickDL — fast media downloader"><link rel="manifest" href="/manifest.json"><title>QuickDL — Media Downloader</title><link rel="stylesheet" href="/static/styles.css"></head><body>
-<div class="ambient"></div><header class="top"><div class="navwrap"><a class="brand" href="#" data-view="home"><span class="logo">Q</span><span><b>QUICKDL</b><small>MEDIA DOWNLOADER</small></span></a><nav><button class="nav active" data-view="home">Home</button><button class="nav" data-view="history">History</button><button class="nav" data-view="favorites">♡ Favorites</button></nav></div></header>
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#06110f"><meta name="description" content="QuickDL — fast media downloader">
+<link rel="manifest" href="/manifest.json"><title>QuickDL — Fast Media Downloader</title>
+<link rel="stylesheet" href="/static/styles.css"></head><body>
+<div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
+<header class="top"><div class="navwrap">
+<a class="brand" href="#" data-view="home"><span class="logo">Q</span><span class="brandtext"><b>QUICKDL</b><small>FAST MEDIA DOWNLOADER</small></span></a>
+<nav><button class="nav active" data-view="home">Home</button><button class="nav" data-view="history">History</button><button class="nav" data-view="favorites">♡ Favorites</button></nav>
+</div></header>
 <main class="wrap">
-<section id="homeView" class="view"><div class="hero"><div class="eyebrow">✦ FAST · SIMPLE · PRIVATE</div><h1>Save the web.<br><span>One link at a time.</span></h1><p>Paste a supported media URL and QuickDL handles the download for you.</p></div>
-<div class="download-panel"><div class="inputline"><input id="url" type="url" placeholder="Paste video or media URL…" autocomplete="off"><select id="kind"><option value="video">🎬 Video</option><option value="audio">🎵 MP3</option></select><button id="downloadBtn">Download <span>↗</span></button></div><div class="platforms"><span>YouTube</span><span>TikTok</span><span>Instagram</span><span>Facebook</span><span>Pinterest</span><span>X</span></div><div id="status" class="status"><div class="statusrow"><span id="statusDot"></span><b id="statusText">Starting…</b><span id="statusTime"></span></div><div class="progress"><i id="bar"></i></div></div><div class="fine">Public and otherwise accessible media supported. Some sites may restrict automated access.</div></div>
-<div id="recent" class="recent"></div></section>
-<section id="historyView" class="view hidden"><div class="sectionhead"><div><small>YOUR ACTIVITY</small><h2>History</h2><p>Only successful downloads are saved here.</p></div><button id="clear" class="ghost">Clear all</button></div><div id="history" class="history"></div></section>
-<section id="favoritesView" class="view hidden"><div class="sectionhead"><div><small>SAVED MEDIA</small><h2>Favorites</h2><p>Your saved downloads.</p></div></div><div id="favorites" class="cards"></div></section>
+<section id="homeView" class="view"><div class="hero">
+<div class="eyebrow"><i></i> FAST · SIMPLE · PRIVATE</div><h1>Download it.<br><span>Keep it.</span></h1>
+<p>Paste a media link and QuickDL turns supported online media into a file you can preview and save to your device.</p></div>
+<section class="download-panel"><div class="inputline">
+<div class="urlbox"><span>↗</span><input id="url" type="url" placeholder="Paste a video, audio or website URL…" autocomplete="off" inputmode="url"></div>
+<select id="kind"><option value="video">🎬 Video</option><option value="audio">🎵 MP3 Audio</option></select>
+<button id="downloadBtn" class="download-main"><strong>Download</strong><span>↓</span></button>
+</div>
+<div class="quick-row"><span>Supported:</span><b>YouTube</b><b>TikTok</b><b>Instagram</b><b>Facebook</b><b>Pinterest</b><b>X</b></div>
+<div id="status" class="status hidden"><div class="statusrow"><span id="statusDot"></span><div><b id="statusText">Preparing…</b><small id="statusSub">Your download is being processed.</small></div><span id="statusTime"></span></div><div class="progress"><i id="bar"></i></div></div>
+<div class="fine"><span>●</span> Public and otherwise accessible media supported. Site restrictions, login requirements and DRM can prevent a download.</div>
+</section>
+<div class="feature-grid"><div><span>01</span><b>Paste</b><small>Drop your media URL above.</small></div><div><span>02</span><b>Process</b><small>QuickDL prepares the media.</small></div><div><span>03</span><b>Save</b><small>Preview and save to your device.</small></div></div>
+</section>
+<section id="historyView" class="view hidden"><div class="sectionhead"><div><small>YOUR ACTIVITY</small><h2>History</h2><p>Only completed downloads appear here.</p></div><button id="clear" class="ghost">Clear history</button></div><div id="history" class="history"></div></section>
+<section id="favoritesView" class="view hidden"><div class="sectionhead"><div><small>SAVED MEDIA</small><h2>Favorites</h2><p>Your completed saved items.</p></div></div><div id="favorites" class="cards"></div></section>
 </main>
-<footer><div><b>QUICKDL</b><span>Fast media downloader</span></div><a href="mailto:Cosrumer@quickdl.site">Cosrumer@quickdl.site</a><small>For complaints & support</small></footer>
-<div id="toast" class="toast"></div><div id="player" class="modal hidden"><div class="modalbox"><button class="close" id="closePlayer">×</button><div class="playerTitle" id="playerTitle">Preview</div><video id="video" controls playsinline preload="metadata"></video><audio id="audio" controls></audio><a id="saveBtn" class="savebtn" href="#">Save to device</a></div></div>
+<footer><div class="footerbrand"><b>QUICKDL</b><small>Fast media downloader</small></div><div class="support"><span>Complaints &amp; support</span><a href="mailto:costumer@quickdl.site">costumer@quickdl.site</a></div><small>© 2026 QuickDL</small></footer>
+<div id="toast" class="toast"></div>
+<div id="player" class="modal hidden"><div class="modalbox"><button class="close" id="closePlayer" aria-label="Close">×</button><div class="playerTitle" id="playerTitle">Preview</div>
+<div class="playerWrap"><video id="video" controls playsinline preload="metadata"></video><audio id="audio" controls></audio></div>
+<a id="saveBtn" class="savebtn" href="#">Save to device <span>↓</span></a></div></div>
 <script src="/static/app.js"></script></body></html>
