@@ -128,7 +128,7 @@ def ytdlp_options(job, kind, youtube_embedded=False):
         "http_headers": {"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"},
         "format": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b" if kind == "video" else "ba/b",
         "merge_output_format": "mp4" if kind == "video" else None,
-        "max_filesize": MAX_FILE_MB * 1024 * 1024,
+        "max_filesize": int(setting_get("max_file_mb") or MAX_FILE_MB) * 1024 * 1024,
         # YouTube now relies on yt-dlp EJS challenge solving. Node 22 is
         # explicitly enabled here because current yt-dlp requires Node >=22.
         "js_runtimes": {"node": {}},
@@ -242,7 +242,7 @@ def recover_stuck():
         db.close()
 
 def cleanup_old():
-    cutoff = time.time() - KEEP_FILE_HOURS * 3600
+    cutoff = time.time() - float(setting_get("keep_file_hours") or KEEP_FILE_HOURS) * 3600
     for f in WORK.iterdir():
         if not f.is_file() or f.suffix in {".part", ".ytdl"}: continue
         try:
@@ -270,7 +270,10 @@ async def lifespan(app):
 app = FastAPI(title="QuickDL", version="9.2.0", lifespan=lifespan)
 
 @app.get("/")
-def home(): return FileResponse(BASE / "templates" / "index.html")
+def home():
+    if "setting_bool" in globals() and setting_bool("maintenance"):
+        return FileResponse(BASE / "templates" / "maintenance.html")
+    return FileResponse(BASE / "templates" / "index.html")
 
 @app.get("/static/{path:path}")
 def static_file(path: str): return FileResponse(BASE / "static" / path)
@@ -280,6 +283,10 @@ def manifest(): return FileResponse(BASE / "manifest.json", media_type="applicat
 
 @app.get("/sw.js")
 def sw(): return FileResponse(BASE / "sw.js", media_type="application/javascript", headers={"Cache-Control":"no-cache"})
+
+@app.get("/api/public-config")
+def public_config():
+    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance")}
 
 @app.get("/api/health")
 def health():
@@ -309,7 +316,14 @@ def serialize(row):
 
 @app.post("/api/download")
 def create_download(req: DownloadRequest, vexdou_visitor: str | None = Cookie(default=None)):
+    if setting_bool("maintenance"):
+        raise HTTPException(503, setting_get("maintenance_message"))
+    if not setting_bool("downloads_enabled"):
+        raise HTTPException(503, "Downloads are temporarily disabled by QuickDL.")
     url, kind = str(req.url).strip(), req.kind.lower().strip()
+    p = platform(url)
+    if not setting_bool(f"{p}_enabled"):
+        raise HTTPException(503, f"{p.title()} downloads are temporarily unavailable.")
     if kind not in {"video", "audio"}: raise HTTPException(400, "Invalid download type")
     if not allowed(url): raise HTTPException(400, "Please enter a valid public HTTP/HTTPS URL")
     visitor, job = vexdou_visitor or uuid.uuid4().hex, uuid.uuid4().hex
@@ -376,3 +390,224 @@ def file(job: str, vexdou_visitor: str | None = Cookie(default=None)):
                             headers={"Accept-Ranges":"bytes", "Cache-Control":"private,max-age=3600"})
     finally:
         db.close()
+
+# --- Admin18 control center ---
+from fastapi import Request
+from fastapi.responses import HTMLResponse
+from sqlalchemy import Float, Boolean
+import hashlib, hmac, base64, json
+
+class AdminSetting(Base):
+    __tablename__ = "admin_settings"
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+class AdminAudit(Base):
+    __tablename__ = "admin_audit"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    action: Mapped[str] = mapped_column(String(160))
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+Base.metadata.create_all(engine)
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
+ADMIN_SESSION_SECRET = os.getenv("ADMIN_SESSION_SECRET", "").strip()
+ADMIN_COOKIE = "quickdl_admin"
+
+DEFAULT_SETTINGS = {
+    "maintenance": "false",
+    "maintenance_message": "QuickDL is temporarily under maintenance. Please try again shortly.",
+    "announcement_enabled": "false",
+    "announcement": "",
+    "max_file_mb": str(MAX_FILE_MB),
+    "keep_file_hours": str(KEEP_FILE_HOURS),
+    "downloads_enabled": "true",
+    "youtube_enabled": "true",
+    "tiktok_enabled": "true",
+    "instagram_enabled": "true",
+    "facebook_enabled": "true",
+    "pinterest_enabled": "true",
+    "x_enabled": "true",
+    "web_enabled": "true",
+}
+
+def setting_get(key):
+    db = Session()
+    try:
+        row = db.get(AdminSetting, key)
+        return row.value if row else DEFAULT_SETTINGS.get(key, "")
+    finally:
+        db.close()
+
+def settings_all():
+    db = Session()
+    try:
+        vals = dict(DEFAULT_SETTINGS)
+        for row in db.scalars(select(AdminSetting)).all(): vals[row.key] = row.value
+        return vals
+    finally: db.close()
+
+def setting_bool(key):
+    return setting_get(key).lower() in {"1", "true", "yes", "on"}
+
+def audit(action, detail=""):
+    db = Session()
+    try:
+        db.add(AdminAudit(action=action, detail=detail[:1000]))
+        db.commit()
+    finally: db.close()
+
+def sign_admin(value):
+    if not ADMIN_SESSION_SECRET: return ""
+    sig = hmac.new(ADMIN_SESSION_SECRET.encode(), value.encode(), hashlib.sha256).digest()
+    return value + "." + base64.urlsafe_b64encode(sig).decode().rstrip("=")
+
+def valid_admin_cookie(cookie):
+    if not cookie or not ADMIN_SESSION_SECRET: return False
+    try:
+        value, sig = cookie.rsplit(".", 1)
+        expected = hmac.new(ADMIN_SESSION_SECRET.encode(), value.encode(), hashlib.sha256).digest()
+        supplied = base64.urlsafe_b64decode(sig + "=" * (-len(sig) % 4))
+        if not hmac.compare_digest(expected, supplied): return False
+        ts = int(value)
+        return time.time() - ts < 12 * 3600
+    except Exception:
+        return False
+
+def admin_ok(request: Request):
+    return valid_admin_cookie(request.cookies.get(ADMIN_COOKIE))
+
+def require_admin(request: Request):
+    if not admin_ok(request): raise HTTPException(401, "Admin authentication required")
+
+def admin_file(name):
+    return FileResponse(BASE / "templates" / name)
+
+@app.get("/admin18", response_class=HTMLResponse)
+def admin_page(request: Request):
+    if not admin_ok(request): return admin_file("admin_login.html")
+    return admin_file("admin.html")
+
+class AdminLogin(BaseModel):
+    password: str
+
+class AdminSettingUpdate(BaseModel):
+    settings: dict[str, str]
+
+class AdminAction(BaseModel):
+    action: str
+    value: str | None = None
+
+@app.post("/api/admin/login")
+def admin_login(data: AdminLogin):
+    if not ADMIN_PASSWORD or not ADMIN_SESSION_SECRET:
+        raise HTTPException(503, "Admin authentication is not configured. Set ADMIN_PASSWORD and ADMIN_SESSION_SECRET.")
+    if not hmac.compare_digest(data.password, ADMIN_PASSWORD):
+        audit("admin_login_failed", "Invalid password")
+        raise HTTPException(401, "Invalid admin password")
+    token = sign_admin(str(int(time.time())))
+    out = JSONResponse({"ok": True})
+    out.set_cookie(ADMIN_COOKIE, token, max_age=43200, httponly=True, secure=True, samesite="strict", path="/")
+    audit("admin_login", "Admin session started")
+    return out
+
+@app.post("/api/admin/logout")
+def admin_logout(request: Request):
+    require_admin(request)
+    out = JSONResponse({"ok": True})
+    out.delete_cookie(ADMIN_COOKIE, path="/")
+    audit("admin_logout", "Admin session ended")
+    return out
+
+@app.get("/api/admin/overview")
+def admin_overview(request: Request):
+    require_admin(request)
+    db = Session()
+    try:
+        total = db.scalar(select(Download.id).count()) if False else None
+        rows = db.scalars(select(Download)).all()
+        now = datetime.now(timezone.utc)
+        today = [r for r in rows if r.created_at and (now-r.created_at).total_seconds() < 86400]
+        week = [r for r in rows if r.created_at and (now-r.created_at).total_seconds() < 604800]
+        status = {}
+        plats = {}
+        for r in rows:
+            status[r.status] = status.get(r.status, 0) + 1
+            p = platform(r.url); plats[p] = plats.get(p, 0) + 1
+        users = len({r.visitor_id for r in rows})
+        return {"version":"9.2.0-admin18", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
+    finally: db.close()
+
+@app.get("/api/admin/users")
+def admin_users(request: Request, limit: int = 100):
+    require_admin(request); limit=max(1,min(limit,500)); db=Session()
+    try:
+        rows=db.scalars(select(Download).order_by(Download.created_at.desc())).all(); groups={}
+        for r in rows:
+            g=groups.setdefault(r.visitor_id,{"visitor_id":r.visitor_id,"first_seen":r.created_at,"last_seen":r.created_at,"downloads":0,"completed":0,"failed":0})
+            g["downloads"]+=1; g["completed"]+=r.status=="completed"; g["failed"]+=r.status=="failed"
+            if r.created_at and (not g["first_seen"] or r.created_at<g["first_seen"]): g["first_seen"]=r.created_at
+            if r.created_at and (not g["last_seen"] or r.created_at>g["last_seen"]): g["last_seen"]=r.created_at
+        items=list(groups.values())[:limit]
+        for x in items:
+            x["first_seen"]=x["first_seen"].isoformat() if x["first_seen"] else None; x["last_seen"]=x["last_seen"].isoformat() if x["last_seen"] else None
+        return {"items":items}
+    finally: db.close()
+
+@app.get("/api/admin/downloads")
+def admin_downloads(request: Request, status: str = "", limit: int = 200):
+    require_admin(request); limit=max(1,min(limit,500)); db=Session()
+    try:
+        q=select(Download).order_by(Download.created_at.desc()).limit(limit)
+        if status: q=select(Download).where(Download.status==status).order_by(Download.created_at.desc()).limit(limit)
+        rows=db.scalars(q).all()
+        return {"items":[{"job_id":r.job_id,"visitor_id":r.visitor_id,"title":r.title,"url":r.url,"platform":platform(r.url),"kind":r.kind,"status":r.status,"error":r.error,"created_at":r.created_at.isoformat() if r.created_at else None} for r in rows]}
+    finally: db.close()
+
+@app.get("/api/admin/errors")
+def admin_errors(request: Request, limit: int = 100):
+    require_admin(request); db=Session()
+    try:
+        rows=db.scalars(select(Download).where(Download.status=="failed").order_by(Download.created_at.desc()).limit(max(1,min(limit,300)))).all(); return {"items":[{"job_id":r.job_id,"platform":platform(r.url),"error":r.error or "Unknown error","url":r.url,"created_at":r.created_at.isoformat() if r.created_at else None} for r in rows]}
+    finally: db.close()
+
+@app.get("/api/admin/audit")
+def admin_audit(request: Request, limit: int = 100):
+    require_admin(request); db=Session()
+    try:
+        rows=db.scalars(select(AdminAudit).order_by(AdminAudit.created_at.desc()).limit(max(1,min(limit,300)))).all(); return {"items":[{"action":r.action,"detail":r.detail,"created_at":r.created_at.isoformat() if r.created_at else None} for r in rows]}
+    finally: db.close()
+
+@app.post("/api/admin/settings")
+def admin_settings(data: AdminSettingUpdate, request: Request):
+    require_admin(request); allowed_keys=set(DEFAULT_SETTINGS); db=Session()
+    try:
+        changed=[]
+        for key,val in data.settings.items():
+            if key not in allowed_keys: continue
+            val=str(val)[:2000]
+            row=db.get(AdminSetting,key)
+            if row: row.value=val; row.updated_at=datetime.now(timezone.utc)
+            else: db.add(AdminSetting(key=key,value=val))
+            changed.append(key)
+        db.commit(); audit("settings_updated", ", ".join(changed)); return {"ok":True,"settings":settings_all()}
+    finally: db.close()
+
+@app.post("/api/admin/action")
+def admin_action(data: AdminAction, request: Request):
+    require_admin(request)
+    actions={"clear_failed","clear_completed","clear_all"}
+    if data.action not in actions: raise HTTPException(400,"Unknown action")
+    db=Session()
+    try:
+        if data.action=="clear_failed": rows=db.scalars(select(Download).where(Download.status=="failed")).all()
+        elif data.action=="clear_completed": rows=db.scalars(select(Download).where(Download.status=="completed")).all()
+        else: rows=db.scalars(select(Download)).all()
+        for r in rows: cleanup_job(r.job_id)
+        if data.action=="clear_failed": db.execute(delete(Download).where(Download.status=="failed"))
+        elif data.action=="clear_completed": db.execute(delete(Download).where(Download.status=="completed"))
+        else: db.execute(delete(Download))
+        db.commit(); audit("admin_action",data.action); return {"ok":True,"removed":len(rows)}
+    finally: db.close()
+
