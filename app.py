@@ -1,19 +1,13 @@
-import os
-import re
-import time
-import uuid
-import mimetypes
-import logging
-import threading
-import ipaddress
-import socket
+import os, re, time, uuid, mimetypes, logging, threading, ipaddress, socket
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+import boto3
 import yt_dlp
+from botocore.client import Config
 from fastapi import FastAPI, HTTPException, Cookie
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy import create_engine, String, Text, Integer, DateTime, select, update
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
@@ -34,13 +28,17 @@ if DB_URL.startswith("postgres://"):
 elif DB_URL.startswith("postgresql://"):
     DB_URL = DB_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
 
-engine = create_engine(DB_URL, pool_pre_ping=True, pool_recycle=300, pool_size=3, max_overflow=2)
+engine = create_engine(
+    DB_URL,
+    pool_pre_ping=True,
+    pool_recycle=300,
+    pool_size=3,
+    max_overflow=2,
+)
 Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-
 
 class Base(DeclarativeBase):
     pass
-
 
 class Download(Base):
     __tablename__ = "downloads"
@@ -53,12 +51,13 @@ class Download(Base):
     status: Mapped[str] = mapped_column(String(30), default="queued", index=True)
     kind: Mapped[str] = mapped_column(String(20), default="video")
     filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+    object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
     )
-
 
 Base.metadata.create_all(engine)
 
@@ -67,113 +66,103 @@ UA = os.getenv(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "Chrome/128.0.0.0 Safari/537.36",
 )
-MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "300"))
-KEEP_FILE_HOURS = float(os.getenv("KEEP_FILE_HOURS", "6"))
 
+KNOWN = {
+    "youtube.com", "youtu.be", "youtube-nocookie.com",
+    "tiktok.com",
+    "instagram.com", "instagr.am",
+    "facebook.com", "fb.watch", "fb.me",
+    "pinterest.com", "pin.it",
+    "twitter.com", "x.com",
+}
 
 def hostname(url: str) -> str:
     return (urlparse(url).hostname or "").lower().rstrip(".")
 
-
 def platform(url: str) -> str:
     h = hostname(url)
-    if "youtube" in h or h == "youtu.be":
-        return "youtube"
-    if "tiktok" in h:
-        return "tiktok"
-    if "instagram" in h or h == "instagr.am":
-        return "instagram"
-    if "facebook" in h or h in {"fb.watch", "fb.me"}:
-        return "facebook"
-    if "pinterest" in h or h == "pin.it":
-        return "pinterest"
-    if h in {"x.com", "twitter.com"}:
-        return "x"
+    if "youtube" in h or h == "youtu.be": return "youtube"
+    if "tiktok" in h: return "tiktok"
+    if "instagram" in h or h == "instagr.am": return "instagram"
+    if "facebook" in h or h in {"fb.watch", "fb.me"}: return "facebook"
+    if "pinterest" in h or h == "pin.it": return "pinterest"
+    if h in {"x.com", "twitter.com"}: return "x"
     return "web"
 
-
-def public_host(host: str) -> bool:
-    if not host or host in {"localhost", "localhost.localdomain"}:
+def _host_is_public(h: str) -> bool:
+    if not h or h in {"localhost", "localhost.localdomain"}:
         return False
-    if host.endswith((".local", ".internal", ".localhost")):
+    if h.endswith(".local") or h.endswith(".internal"):
         return False
     try:
-        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-        if not infos:
-            return False
+        infos = socket.getaddrinfo(h, None, type=socket.SOCK_STREAM)
         for info in infos:
             addr = ipaddress.ip_address(info[4][0])
             if (
-                addr.is_private
-                or addr.is_loopback
-                or addr.is_link_local
-                or addr.is_multicast
-                or addr.is_reserved
-                or addr.is_unspecified
+                addr.is_private or addr.is_loopback or addr.is_link_local
+                or addr.is_multicast or addr.is_reserved or addr.is_unspecified
             ):
                 return False
         return True
     except Exception:
-        # DNS can fail temporarily; yt-dlp will provide the final network error.
+        # Domain may not resolve from the web process yet. yt-dlp will report
+        # a useful error if the host itself is unavailable.
         return True
-
 
 def allowed(url: str) -> bool:
     try:
-        parsed = urlparse(url)
-        return parsed.scheme in {"http", "https"} and bool(parsed.hostname) and public_host(hostname(url))
+        p = urlparse(url)
+        if p.scheme not in {"http", "https"} or not p.hostname:
+            return False
+        h = hostname(url)
+        # Known media platforms plus any public website URL supported by yt-dlp.
+        return _host_is_public(h)
     except Exception:
         return False
 
+def r2_client():
+    needed = ["R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"]
+    if not all(os.getenv(x) for x in needed):
+        raise RuntimeError("R2 storage is not configured")
+    return boto3.client(
+        "s3",
+        endpoint_url=os.environ["R2_ENDPOINT"],
+        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+        region_name=os.getenv("R2_REGION", "auto"),
+        config=Config(signature_version="s3v4"),
+    )
 
-def human_error(exc: Exception) -> str:
-    text = re.sub(r"\s+", " ", str(exc)).strip()
-    low = text.lower()
-    if "comfortable for some audiences" in low or "login for access" in low:
-        return "TikTok restricted this post. QuickDL can download public posts only."
-    if "sign in" in low or "login required" in low or "authentication" in low:
-        return "This media requires sign-in. QuickDL supports public media only."
-    if "private" in low:
-        return "This media is private and cannot be downloaded as a public URL."
-    if "drm" in low:
-        return "This media uses DRM and cannot be downloaded by QuickDL."
-    if "unsupported url" in low or "no suitable extractor" in low:
-        return "This website or URL is not supported by the current media extractor."
-    if "http error 403" in low or "forbidden" in low:
-        return "The website refused automated access to this media."
-    if "http error 429" in low or "too many requests" in low:
-        return "The website is temporarily rate-limiting requests. Please try again later."
-    if "timed out" in low or "timeout" in low:
-        return "The source website took too long to respond. Please try again."
-    return text[:700] or "Download failed. Please try another public media URL."
-
-
-def options(job: str, kind: str, p: str):
+def ytdlp_options(job: str, kind: str, p: str):
     out = str(WORK / f"{job}.%(ext)s")
     opts = {
         "outtmpl": out,
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
-        "retries": 4,
-        "fragment_retries": 4,
+        "retries": 5,
+        "fragment_retries": 5,
         "file_access_retries": 3,
-        "socket_timeout": 35,
+        "socket_timeout": 45,
         "concurrent_fragment_downloads": 3,
         "skip_unavailable_fragments": True,
         "restrictfilenames": True,
         "windowsfilenames": True,
-        "http_headers": {"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"},
+        "http_headers": {
+            "User-Agent": UA,
+            "Accept-Language": "en-US,en;q=0.9",
+        },
         "format": (
             "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b"
-            if kind == "video"
-            else "ba/b"
+            if kind == "video" else
+            "ba/b"
         ),
         "merge_output_format": "mp4" if kind == "video" else None,
-        "max_filesize": MAX_FILE_MB * 1024 * 1024,
     }
     if p == "youtube":
-        opts["extractor_args"] = {"youtube": {"player_client": ["web", "android", "ios"]}}
+        opts["extractor_args"] = {
+            "youtube": {"player_client": ["web", "android", "ios"]}
+        }
     if kind == "audio":
         opts["postprocessors"] = [{
             "key": "FFmpegExtractAudio",
@@ -182,42 +171,28 @@ def options(job: str, kind: str, p: str):
         }]
     return {k: v for k, v in opts.items() if v is not None}
 
-
-def cleanup_job(job: str):
+def cleanup(job: str):
     for f in WORK.glob(f"{job}.*"):
         try:
             f.unlink()
         except OSError:
             pass
 
-
-def cleanup_old_files():
-    cutoff = time.time() - KEEP_FILE_HOURS * 3600
-    for f in WORK.iterdir():
-        if not f.is_file() or f.suffix in {".part", ".ytdl"}:
-            continue
-        try:
-            if f.stat().st_mtime < cutoff:
-                f.unlink()
-        except OSError:
-            pass
-
-
-def mark_failed(job: str, error: Exception | str):
+def mark_failed(job: str, error):
     db = Session()
     try:
+        msg = re.sub(r"\s+", " ", str(error)).strip()[:900]
         db.execute(
             update(Download)
             .where(Download.job_id == job)
-            .values(status="failed", error=human_error(error))
+            .values(status="failed", error=msg)
         )
         db.commit()
     finally:
         db.close()
 
-
 def process(job: str, kind: str):
-    cleanup_job(job)
+    cleanup(job)
     db = Session()
     try:
         row = db.scalar(select(Download).where(Download.job_id == job))
@@ -229,8 +204,8 @@ def process(job: str, kind: str):
 
     try:
         p = platform(url)
-        log.info("job=%s platform=%s starting", job, p)
-        with yt_dlp.YoutubeDL(options(job, kind, p)) as ydl:
+        log.info("job=%s platform=%s starting url=%s", job, p, url)
+        with yt_dlp.YoutubeDL(ytdlp_options(job, kind, p)) as ydl:
             info = ydl.extract_info(url, download=True)
 
         files = [
@@ -238,16 +213,29 @@ def process(job: str, kind: str):
             if f.is_file() and f.suffix not in {".part", ".ytdl"}
         ]
         if not files:
-            raise RuntimeError("No media file was created")
+            raise RuntimeError("yt-dlp finished without creating a media file")
+
         media = max(files, key=lambda f: f.stat().st_size)
         if media.stat().st_size < 1:
             raise RuntimeError("Downloaded file is empty")
 
+        key = (
+            f"media/{datetime.now(timezone.utc):%Y/%m/%d}/"
+            f"{uuid.uuid4().hex}{media.suffix.lower()}"
+        )
         ctype = mimetypes.guess_type(media.name)[0] or (
             "audio/mpeg" if kind == "audio" else "video/mp4"
         )
-        title = re.sub(r"\s+", " ", info.get("title") or "Media").strip()[:180]
-        filename = media.name
+
+        r2_client().upload_file(
+            str(media),
+            os.environ["R2_BUCKET"],
+            key,
+            ExtraArgs={
+                "ContentType": ctype,
+                "CacheControl": "public,max-age=3600",
+            },
+        )
 
         db = Session()
         try:
@@ -255,9 +243,10 @@ def process(job: str, kind: str):
                 update(Download)
                 .where(Download.job_id == job)
                 .values(
-                    title=title,
+                    title=re.sub(r"\s+", " ", info.get("title") or "Media").strip()[:180],
                     thumbnail=info.get("thumbnail"),
-                    filename=filename,
+                    filename=media.name,
+                    object_key=key,
                     content_type=ctype,
                     status="completed",
                     error=None,
@@ -266,12 +255,13 @@ def process(job: str, kind: str):
             db.commit()
         finally:
             db.close()
+
         log.info("job=%s completed size=%s", job, media.stat().st_size)
     except Exception as exc:
         log.exception("job=%s failed", job)
-        cleanup_job(job)
         mark_failed(job, exc)
-
+    finally:
+        cleanup(job)
 
 def claim_one():
     db = Session()
@@ -286,7 +276,10 @@ def claim_one():
             return None
         result = db.execute(
             update(Download)
-            .where(Download.job_id == row.job_id, Download.status == "queued")
+            .where(
+                Download.job_id == row.job_id,
+                Download.status == "queued",
+            )
             .values(status="downloading", error=None)
         )
         if result.rowcount != 1:
@@ -297,31 +290,24 @@ def claim_one():
     finally:
         db.close()
 
-
-def reset_stale_jobs():
+def recover_stuck_jobs():
+    # Jobs can be left in "downloading" if Render restarts the process.
+    # On a fresh process they are safe to retry.
     db = Session()
     try:
-        # A Render restart can leave jobs marked downloading forever.
         db.execute(
             update(Download)
             .where(Download.status == "downloading")
-            .values(status="queued", error=None)
+            .values(status="queued", error="Retrying after service restart")
         )
         db.commit()
     finally:
         db.close()
 
-
 def worker_loop():
     log.info("embedded worker started")
-    reset_stale_jobs()
-    last_cleanup = 0.0
     while True:
         try:
-            now = time.time()
-            if now - last_cleanup > 600:
-                cleanup_old_files()
-                last_cleanup = now
             item = claim_one()
             if item:
                 process(*item)
@@ -331,25 +317,29 @@ def worker_loop():
             log.exception("worker loop error")
             time.sleep(2)
 
-
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
+async def lifespan(app):
+    recover_stuck_jobs()
+    if os.getenv("DISABLE_EMBEDDED_WORKER", "0") != "1":
+        threading.Thread(
+            target=worker_loop,
+            daemon=True,
+            name="quickdl-worker",
+        ).start()
     yield
 
-
-app = FastAPI(title="QuickDL", version="5.0.0", lifespan=lifespan)
-
+app = FastAPI(title="QuickDL Downloader", version="5.0.0", lifespan=lifespan)
 
 @app.get("/")
 def home():
     return FileResponse(BASE / "templates" / "index.html")
 
-
 @app.get("/manifest.json")
 def manifest():
-    return FileResponse(BASE / "manifest.json", media_type="application/manifest+json")
-
+    return FileResponse(
+        BASE / "manifest.json",
+        media_type="application/manifest+json",
+    )
 
 @app.get("/sw.js")
 def sw():
@@ -359,51 +349,83 @@ def sw():
         headers={"Cache-Control": "no-cache"},
     )
 
-
 @app.get("/api/health")
 def health():
-    db = Session()
+    db_ok = False
     try:
-        db.execute(select(Download.id).limit(1)).first()
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral"}
-    finally:
+        db = Session()
+        db.execute(select(Download.id).limit(1))
+        db_ok = True
         db.close()
-
+    except Exception:
+        log.exception("database health check failed")
+    return {
+        "ok": db_ok,
+        "service": "quickdl-web",
+        "worker": os.getenv("DISABLE_EMBEDDED_WORKER", "0") != "1",
+        "version": "5.0.0",
+    }
 
 class DownloadRequest(BaseModel):
     url: HttpUrl
     kind: str = "video"
 
+def serialize(row):
+    signed = None
+    if row.status == "completed" and row.object_key:
+        try:
+            signed = r2_client().generate_presigned_url(
+                "get_object",
+                Params={
+                    "Bucket": os.environ["R2_BUCKET"],
+                    "Key": row.object_key,
+                },
+                ExpiresIn=900,
+            )
+        except Exception:
+            log.exception("presign failed for %s", row.job_id)
 
-def serialize(row: Download):
-    local_file = WORK / row.filename if row.filename else None
-    ready = row.status == "completed" and local_file is not None and local_file.exists()
-    status = "completed" if ready else ("expired" if row.status == "completed" else row.status)
     return {
         "job_id": row.job_id,
         "title": row.title,
-        "status": status,
+        "status": row.status,
         "kind": row.kind,
         "thumbnail": row.thumbnail,
         "url": row.url,
         "platform": platform(row.url),
         "created_at": row.created_at.isoformat() if row.created_at else None,
-        "download_url": f"/api/file/{row.job_id}" if ready else None,
-        "error": row.error if status != "expired" else "This file is no longer stored on the server.",
+        "download_url": signed,
+        "error": row.error,
     }
 
-
 @app.post("/api/download")
-def create_download(req: DownloadRequest, vexdou_visitor: str | None = Cookie(default=None)):
+def create_download(
+    req: DownloadRequest,
+    vexdou_visitor: str | None = Cookie(default=None),
+):
     url = str(req.url).strip()
     kind = req.kind.lower().strip()
+
     if kind not in {"video", "audio"}:
         raise HTTPException(400, "Invalid download type")
+
     if not allowed(url):
-        raise HTTPException(400, "Please enter a public HTTP/HTTPS media URL")
+        raise HTTPException(
+            400,
+            "Only public HTTP/HTTPS website URLs are supported.",
+        )
+
+    try:
+        r2_client()
+    except Exception:
+        raise HTTPException(
+            503,
+            "Storage is not configured. Add the R2 environment variables on Render.",
+        )
 
     visitor = vexdou_visitor or uuid.uuid4().hex
     job = uuid.uuid4().hex
+
     db = Session()
     try:
         db.add(
@@ -420,7 +442,13 @@ def create_download(req: DownloadRequest, vexdou_visitor: str | None = Cookie(de
     finally:
         db.close()
 
-    out = JSONResponse({"ok": True, "job_id": job, "status": "queued", "platform": platform(url), "kind": kind})
+    out = JSONResponse({
+        "ok": True,
+        "job_id": job,
+        "status": "queued",
+        "platform": platform(url),
+        "kind": kind,
+    })
     if not vexdou_visitor:
         out.set_cookie(
             "vexdou_visitor",
@@ -432,9 +460,11 @@ def create_download(req: DownloadRequest, vexdou_visitor: str | None = Cookie(de
         )
     return out
 
-
 @app.get("/api/download/{job}")
-def get_download(job: str, vexdou_visitor: str | None = Cookie(default=None)):
+def get_download(
+    job: str,
+    vexdou_visitor: str | None = Cookie(default=None),
+):
     if not vexdou_visitor:
         raise HTTPException(404, "Download not found")
     db = Session()
@@ -450,7 +480,6 @@ def get_download(job: str, vexdou_visitor: str | None = Cookie(default=None)):
         return serialize(row)
     finally:
         db.close()
-
 
 @app.get("/api/history")
 def history(vexdou_visitor: str | None = Cookie(default=None)):
@@ -468,9 +497,11 @@ def history(vexdou_visitor: str | None = Cookie(default=None)):
     finally:
         db.close()
 
-
 @app.get("/api/file/{job}")
-def get_file(job: str, vexdou_visitor: str | None = Cookie(default=None)):
+def file_redirect(
+    job: str,
+    vexdou_visitor: str | None = Cookie(default=None),
+):
     if not vexdou_visitor:
         raise HTTPException(404, "File not found")
     db = Session()
@@ -482,20 +513,19 @@ def get_file(job: str, vexdou_visitor: str | None = Cookie(default=None)):
                 Download.status == "completed",
             )
         )
-        if not row or not row.filename:
+        if not row or not row.object_key:
             raise HTTPException(404, "File not found")
-        path = WORK / row.filename
-        if not path.exists() or not path.is_file():
-            raise HTTPException(410, "This file has expired. Please download it again.")
-        return FileResponse(
-            path,
-            media_type=row.content_type or "application/octet-stream",
-            filename=row.filename,
-            headers={"Cache-Control": "private, max-age=900"},
+        url = r2_client().generate_presigned_url(
+            "get_object",
+            Params={
+                "Bucket": os.environ["R2_BUCKET"],
+                "Key": row.object_key,
+            },
+            ExpiresIn=900,
         )
+        return RedirectResponse(url, 302)
     finally:
         db.close()
-
 
 @app.delete("/api/history")
 def clear_history(vexdou_visitor: str | None = Cookie(default=None)):
@@ -503,13 +533,20 @@ def clear_history(vexdou_visitor: str | None = Cookie(default=None)):
         return {"ok": True}
     db = Session()
     try:
-        rows = db.scalars(select(Download).where(Download.visitor_id == vexdou_visitor)).all()
+        rows = db.scalars(
+            select(Download).where(Download.visitor_id == vexdou_visitor)
+        ).all()
+        client = r2_client()
         for row in rows:
-            if row.filename:
+            if row.object_key:
                 try:
-                    (WORK / row.filename).unlink(missing_ok=True)
-                except OSError:
-                    pass
+                    client.delete_object(
+                        Bucket=os.environ["R2_BUCKET"],
+                        Key=row.object_key,
+                    )
+                except Exception:
+                    log.warning("failed deleting %s", row.object_key)
+        for row in rows:
             db.delete(row)
         db.commit()
         return {"ok": True}

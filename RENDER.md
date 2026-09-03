@@ -1,13 +1,7 @@
 # Render setup
 
-Create one Render Web Service from this repository using the Docker runtime.
+Create a Web Service from this repository and keep Docker runtime enabled.
 
-Required environment variable:
+Set DATABASE_URL to your PostgreSQL connection string and configure the four R2 variables. The embedded worker is enabled with DISABLE_EMBEDDED_WORKER=0.
 
-`DATABASE_URL`
-
-No R2 endpoint, bucket, access key, or secret is required by this version.
-
-The service includes an embedded queue worker because this setup is intended for one Render web instance. It downloads media to temporary local storage and exposes completed files through `/api/file/<job_id>`.
-
-Important: Render Free web services have an ephemeral filesystem. Files disappear after restart, redeploy, or spin-down. This design is therefore intended for download-and-save use, not permanent file hosting.
+The free Render web service sleeps after inactivity and its local filesystem is ephemeral, so downloaded media is uploaded to R2 rather than stored permanently on the container.
