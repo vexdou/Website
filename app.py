@@ -110,7 +110,7 @@ def human_error(exc):
         return "The source took too long to respond. Please try again."
     return text[:700] or "Download failed. Please try another media URL."
 
-def ytdlp_options(job, kind):
+def ytdlp_options(job, kind, youtube_embedded=False):
     out = str(WORK / f"{job}.%(ext)s")
     opts = {
         "outtmpl": out,
@@ -130,9 +130,23 @@ def ytdlp_options(job, kind):
         "merge_output_format": "mp4" if kind == "video" else None,
         "max_filesize": MAX_FILE_MB * 1024 * 1024,
     }
+    # YouTube increasingly protects some normal web requests with sign-in/PO-token
+    # checks. The embedded client is an official yt-dlp client intended for videos
+    # that are publicly embeddable; it does not grant access to private/auth-only media.
+    if youtube_embedded:
+        opts["extractor_args"] = {"youtube": {"player_client": ["web_embedded"]}}
     if kind == "audio":
         opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
     return {k: v for k, v in opts.items() if v is not None}
+
+def youtube_needs_fallback(exc):
+    text = str(exc).lower()
+    markers = (
+        "sign in to confirm", "requires sign-in", "requires sign in",
+        "login required", "authentication required", "confirm you're not a bot",
+        "this content isn't available", "http error 403", "forbidden"
+    )
+    return any(marker in text for marker in markers)
 
 def cleanup_job(job):
     for f in WORK.glob(f"{job}.*"):
@@ -157,8 +171,30 @@ def process(job, kind):
     finally:
         db.close()
     try:
-        with yt_dlp.YoutubeDL(ytdlp_options(job, kind)) as ydl:
-            info = ydl.extract_info(url, download=True)
+        # First use the normal extractor. If YouTube rejects the anonymous web
+        # client, retry once with the public embedded client. This can recover
+        # publicly embeddable videos without attempting to bypass private/auth gates.
+        attempts = [ytdlp_options(job, kind)]
+        if platform(url) == "youtube":
+            attempts.append(ytdlp_options(job, kind, youtube_embedded=True))
+
+        last_exc = None
+        info = None
+        for attempt_no, opts in enumerate(attempts):
+            try:
+                cleanup_job(job)
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt_no == 0 and platform(url) == "youtube" and youtube_needs_fallback(exc):
+                    log.warning("job=%s: normal YouTube client rejected; retrying public embedded client", job)
+                    continue
+                raise
+        if info is None:
+            raise last_exc or RuntimeError("No media information was returned")
+
         files = [f for f in WORK.glob(f"{job}.*") if f.is_file() and f.suffix not in {".part", ".ytdl"}]
         if not files: raise RuntimeError("No media file was created")
         media = max(files, key=lambda f: f.stat().st_size)
@@ -228,7 +264,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="8.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="9.1.0", lifespan=lifespan)
 
 @app.get("/")
 def home(): return FileResponse(BASE / "templates" / "index.html")
@@ -247,7 +283,7 @@ def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "8.0.0"}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "9.1.0"}
     finally: db.close()
 
 class DownloadRequest(BaseModel):
