@@ -1,17 +1,30 @@
 # QuickDL
 
-Render-ready public media downloader using FastAPI, yt-dlp, PostgreSQL and Cloudflare R2.
+QuickDL is a FastAPI + yt-dlp public-media downloader designed for a single Render Web Service.
 
-## Required Render environment variables
-- DATABASE_URL
-- R2_ENDPOINT
-- R2_ACCESS_KEY_ID
-- R2_SECRET_ACCESS_KEY
-- R2_BUCKET
+## Storage
 
-The free Render web service runs an embedded single worker so a separate paid Background Worker is not required. Render's free web service is suitable for testing, but long media jobs consume CPU/RAM/bandwidth.
+This version intentionally removes Cloudflare R2. Downloaded media is stored temporarily in `/tmp/quickdl` and served directly by the web service. The database stores job/history metadata only.
 
-The downloader accepts public HTTP/HTTPS URLs. yt-dlp decides whether a public website URL has a supported extractor. Login-only, DRM-protected, or sites that block automated access may still fail.
+Because Render Free has an ephemeral filesystem, completed files can disappear when the service restarts, redeploys, or spins down. Users should save the file after it becomes ready.
 
-## Local
-`uvicorn app:app --host 0.0.0.0 --port 10000`
+## Required Render variable
+
+`DATABASE_URL`
+
+## Optional variables
+
+- `MAX_FILE_MB` (default 300)
+- `KEEP_FILE_HOURS` (default 6)
+- `WORKER_POLL_SECONDS` (default 0.7)
+
+## Supported URL behavior
+
+The server accepts public HTTP/HTTPS URLs and lets yt-dlp determine whether the source is supported. Login-required, private, DRM-protected, or source-blocked media cannot be guaranteed.
+
+## Run
+
+```bash
+docker build -t quickdl .
+docker run -p 10000:10000 -e DATABASE_URL='...' quickdl
+```

@@ -7,17 +7,11 @@ services:
     envVars:
       - key: DATABASE_URL
         sync: false
-      - key: R2_ENDPOINT
-        sync: false
-      - key: R2_ACCESS_KEY_ID
-        sync: false
-      - key: R2_SECRET_ACCESS_KEY
-        sync: false
-      - key: R2_BUCKET
-        sync: false
-      - key: R2_REGION
-        value: auto
-      - key: DISABLE_EMBEDDED_WORKER
-        value: "0"
+      - key: WEB_CONCURRENCY
+        value: "1"
       - key: WORKER_POLL_SECONDS
         value: "0.7"
+      - key: MAX_FILE_MB
+        value: "300"
+      - key: KEEP_FILE_HOURS
+        value: "6"
