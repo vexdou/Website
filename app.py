@@ -13,7 +13,6 @@ from contextlib import asynccontextmanager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("quickdl")
-APP_VERSION = "9.4.0"
 BASE = Path(__file__).resolve().parent
 WORK = Path(os.getenv("WORK_DIR", "/tmp/quickdl"))
 WORK.mkdir(parents=True, exist_ok=True)
@@ -101,9 +100,7 @@ def human_error(exc):
         return "This media is private or unavailable to the downloader."
     if "drm" in low:
         return "This media is DRM-protected and cannot be downloaded."
-    if "429" in low or "too many requests" in low or "rate-limit" in low or "rate limit" in low:
-        if "instagram" in low:
-            return "Instagram is temporarily rate-limiting this server. Please wait a little and try again."
+    if "429" in low or "too many requests" in low or "rate-limit" in low:
         return "The source temporarily rate-limited this server. Please try again later."
     if "403" in low or "forbidden" in low:
         return "The source refused automated access to this media."
@@ -113,53 +110,45 @@ def human_error(exc):
         return "The source took too long to respond. Please try again."
     return text[:700] or "Download failed. Please try another media URL."
 
-def ytdlp_options(job, kind, youtube_embedded=False, source_platform=None):
+def ytdlp_options(job, kind, youtube_embedded=False, source_url=None):
     out = str(WORK / f"{job}.%(ext)s")
     opts = {
         "outtmpl": out,
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
-        "retries": 5,
-        "fragment_retries": 5,
-        "extractor_retries": 3,
-        "file_access_retries": 3,
+        "retries": 3,
+        "fragment_retries": 3,
+        "file_access_retries": 2,
         "socket_timeout": 45,
         "concurrent_fragment_downloads": 1,
         "skip_unavailable_fragments": True,
         "restrictfilenames": True,
         "windowsfilenames": True,
         "http_headers": {"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"},
-        "sleep_interval_requests": 1,
         "format": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b" if kind == "video" else "ba/b",
         "merge_output_format": "mp4" if kind == "video" else None,
         "max_filesize": int(setting_get("max_file_mb") or MAX_FILE_MB) * 1024 * 1024,
         # YouTube now relies on yt-dlp EJS challenge solving. Node 22 is
         # explicitly enabled here because current yt-dlp requires Node >=22.
         "js_runtimes": {"node": {}},
+        # Keep request volume conservative. A 429 is a source-side rate limit,
+        # not a local download bug; slowing retries prevents making the block worse.
+        "sleep_interval_requests": 1,
+        "retry_sleep_functions": {"http": lambda n: min(30, 2 ** min(n, 4))},
     }
     # YouTube increasingly protects some normal web requests with sign-in/PO-token
     # checks. The embedded client is an official yt-dlp client intended for videos
     # that are publicly embeddable; it does not grant access to private/auth-only media.
-    if source_platform == "instagram":
-        # Instagram can temporarily rate-limit automated requests. A small,
-        # fixed request/download delay plus normal retries reduces burst traffic
-        # without attempting to bypass the site's access controls.
-        opts["sleep_interval_requests"] = 1.5
-        opts["sleep_interval"] = 3
-        opts["http_headers"]["Referer"] = "https://www.instagram.com/"
     if youtube_embedded:
         opts["extractor_args"] = {"youtube": {"player_client": ["web_embedded"]}}
+    if source_url and platform(source_url) == "instagram":
+        # Uses curl_cffi's browser-like TLS/HTTP fingerprinting. This is not an
+        # authentication mechanism and does not bypass Instagram access controls.
+        opts["impersonate"] = "chrome"
     if kind == "audio":
         opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
     return {k: v for k, v in opts.items() if v is not None}
-
-def is_rate_limited(exc):
-    text = str(exc).lower()
-    return any(marker in text for marker in (
-        "http error 429", "429", "too many requests", "rate-limit", "rate limit",
-        "rate limited", "rate-limit reached"
-    ))
 
 def youtube_needs_fallback(exc):
     text = str(exc).lower()
@@ -196,39 +185,23 @@ def process(job, kind):
         # First use the normal extractor. If YouTube rejects the anonymous web
         # client, retry once with the public embedded client. This can recover
         # publicly embeddable videos without attempting to bypass private/auth gates.
-        source_platform = platform(url)
-        attempts = [(ytdlp_options(job, kind, source_platform=source_platform), 0)]
-        if source_platform == "youtube":
-            attempts.append((ytdlp_options(job, kind, youtube_embedded=True, source_platform=source_platform), 0))
-        elif source_platform == "instagram":
-            # Give a temporary Instagram rate-limit a little time to clear.
-            # This is ordinary backoff, not an attempt to evade a block.
-            attempts = [
-                (ytdlp_options(job, kind, source_platform=source_platform), 0),
-                (ytdlp_options(job, kind, source_platform=source_platform), 8),
-                (ytdlp_options(job, kind, source_platform=source_platform), 15),
-            ]
+        attempts = [ytdlp_options(job, kind, source_url=url)]
+        if platform(url) == "youtube":
+            attempts.append(ytdlp_options(job, kind, youtube_embedded=True, source_url=url))
 
         last_exc = None
         info = None
-        for attempt_no, (opts, backoff) in enumerate(attempts):
+        for attempt_no, opts in enumerate(attempts):
             try:
-                if backoff:
-                    log.info("job=%s: waiting %ss before retry", job, backoff)
-                    time.sleep(backoff)
                 cleanup_job(job)
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=True)
                 break
             except Exception as exc:
                 last_exc = exc
-                if attempt_no + 1 < len(attempts):
-                    if source_platform == "youtube" and youtube_needs_fallback(exc) and attempt_no == 0:
-                        log.warning("job=%s: normal YouTube client rejected; retrying public embedded client", job)
-                        continue
-                    if source_platform == "instagram" and is_rate_limited(exc):
-                        log.warning("job=%s: Instagram rate-limited; backing off before retry", job)
-                        continue
+                if attempt_no == 0 and platform(url) == "youtube" and youtube_needs_fallback(exc):
+                    log.warning("job=%s: normal YouTube client rejected; retrying public embedded client", job)
+                    continue
                 raise
         if info is None:
             raise last_exc or RuntimeError("No media information was returned")
@@ -302,7 +275,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="9.2.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="9.4.0", lifespan=lifespan)
 
 @app.get("/")
 def home():
@@ -328,7 +301,7 @@ def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "9.2.0"}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "9.4.0"}
     finally: db.close()
 
 class DownloadRequest(BaseModel):
@@ -571,7 +544,7 @@ def admin_overview(request: Request):
             status[r.status] = status.get(r.status, 0) + 1
             p = platform(r.url); plats[p] = plats.get(p, 0) + 1
         users = len({r.visitor_id for r in rows})
-        return {"version":"9.2.0-admin18", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
+        return {"version":"9.4.0-admin18", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
     finally: db.close()
 
 @app.get("/api/admin/users")
