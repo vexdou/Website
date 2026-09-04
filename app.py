@@ -56,6 +56,11 @@ UA = os.getenv(
 )
 MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "300"))
 KEEP_FILE_HOURS = float(os.getenv("KEEP_FILE_HOURS", "6"))
+# Optional: path to a Netscape-format cookies.txt (see yt-dlp's --cookies docs).
+# Only used if you choose to set it - never required, and never populated
+# automatically. This is a per-deployment opt-in, not something this code does
+# on its own.
+COOKIES_FILE = Path(os.getenv("YTDLP_COOKIES_FILE")) if os.getenv("YTDLP_COOKIES_FILE") else None
 
 def hostname(url):
     return (urlparse(url).hostname or "").lower().rstrip(".")
@@ -68,6 +73,7 @@ def platform(url):
     if "facebook" in h or h in {"fb.watch", "fb.me"}: return "facebook"
     if "pinterest" in h or h == "pin.it": return "pinterest"
     if h in {"x.com", "twitter.com"}: return "x"
+    if "snapchat" in h: return "snapchat"
     return "web"
 
 def public_host(h):
@@ -95,7 +101,9 @@ def allowed(url):
 
 def instagram_public_fallback(job, url, kind):
     """Best-effort fallback for media that Instagram exposes publicly in OG metadata.
-    This never supplies credentials and never attempts to bypass a login/private post.
+    This never supplies credentials and never attempts to bypass a login/private post:
+    if a post needs a login, every URL below will also just return the login wall
+    (or nothing), same as the main extractor, and this simply returns None.
     """
     if kind != "video":
         return None
@@ -106,20 +114,40 @@ def instagram_public_fallback(job, url, kind):
         "Referer": "https://www.instagram.com/",
         "Cache-Control": "no-cache",
     }
+    # Instagram's own embed page is meant for third-party sites to render a
+    # public post and is more likely to include a server-rendered <video>/OG
+    # tag than the main post page, which increasingly leaves a plain,
+    # logged-out fetch with an empty shell. Try it first, then fall back to
+    # the direct URL.
+    candidates = [url]
+    shortcode_m = re.search(r"/(p|reel|tv)/([^/?#]+)", urlparse(url).path)
+    if shortcode_m:
+        candidates.insert(0, f"https://www.instagram.com/{shortcode_m.group(1)}/{shortcode_m.group(2)}/embed/captioned/")
     try:
-        r = requests.get(url, headers=headers, timeout=(15, 30), allow_redirects=True)
-        r.raise_for_status()
-        html = r.text
-        # Only use media explicitly published in public OpenGraph metadata.
+        html = None
+        for candidate in candidates:
+            try:
+                r = requests.get(candidate, headers=headers, timeout=(15, 30), allow_redirects=True)
+                r.raise_for_status()
+            except Exception as exc:
+                log.info("job=%s: Instagram public fetch of %s unavailable: %s", job, candidate, exc)
+                continue
+            html = r.text
+            if "og:video" in html or "video_url" in html:
+                break
+        if not html:
+            return None
+        # Only use media explicitly published in public OpenGraph/page metadata.
         patterns = [
             r'<meta[^>]+property=["\']og:video(?::secure_url)?["\'][^>]+content=["\']([^"\']+)',
             r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:video(?::secure_url)?["\']',
+            r'"video_url"\s*:\s*"([^"]+)"',
         ]
         media_url = None
         for pat in patterns:
             m = re.search(pat, html, re.I)
             if m:
-                media_url = unescape(m.group(1)).replace('&amp;', '&')
+                media_url = unescape(m.group(1)).replace('\\/', '/').replace('&amp;', '&')
                 break
         if not media_url or not media_url.startswith(('http://', 'https://')):
             return None
@@ -166,9 +194,13 @@ def human_error(exc):
         return "This URL is not supported by the media extractor."
     if "timed out" in low or "timeout" in low:
         return "The source took too long to respond. Please try again."
+    if "javascript runtime" in low or "js runtime" in low:
+        return "Server misconfiguration: no JavaScript runtime is installed for this platform. Contact the site operator."
+    if "impersonat" in low or "curl_cffi" in low:
+        return "Server misconfiguration: a required dependency (curl_cffi) is missing for this platform. Contact the site operator."
     return text[:700] or "Download failed. Please try another media URL."
 
-def ytdlp_options(job, kind, youtube_embedded=False):
+def ytdlp_options(job, kind, youtube_player_client=None):
     out = str(WORK / f"{job}.%(ext)s")
     opts = {
         "outtmpl": out,
@@ -187,15 +219,25 @@ def ytdlp_options(job, kind, youtube_embedded=False):
         "format": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b" if kind == "video" else "ba/b",
         "merge_output_format": "mp4" if kind == "video" else None,
         "max_filesize": int(setting_get("max_file_mb") or MAX_FILE_MB) * 1024 * 1024,
-        # YouTube now relies on yt-dlp EJS challenge solving. Node 22 is
-        # explicitly enabled here because current yt-dlp requires Node >=22.
-        "js_runtimes": {"node": {}},
+        # YouTube's signature/throttling challenges now require executing the
+        # site's own JS via an external runtime (yt-dlp's "EJS" system). List
+        # every runtime this deployment might have installed rather than
+        # forcing one - yt-dlp uses whichever is actually present instead of
+        # hard failing when only one of them is available. Install at least
+        # one of these on the host/container (Deno is the simplest: a single
+        # static binary, no version-management needed) alongside the
+        # `yt-dlp-ejs` package pulled in via requirements.txt.
+        "js_runtimes": {"deno": {}, "node": {}, "quickjs": {}},
     }
-    # YouTube increasingly protects some normal web requests with sign-in/PO-token
-    # checks. The embedded client is an official yt-dlp client intended for videos
-    # that are publicly embeddable; it does not grant access to private/auth-only media.
-    if youtube_embedded:
-        opts["extractor_args"] = {"youtube": {"player_client": ["web_embedded"]}}
+    if COOKIES_FILE and COOKIES_FILE.exists():
+        opts["cookiefile"] = str(COOKIES_FILE)
+    # YouTube's anonymous "web" client increasingly hits a "Sign in to confirm
+    # you're not a bot" wall. These are all official yt-dlp player clients that
+    # YouTube itself serves video to - not a login bypass - but which one is
+    # currently trusted shifts every few months, so the caller tries several
+    # in sequence (see the client_chain in process()) instead of just one.
+    if youtube_player_client:
+        opts["extractor_args"] = {"youtube": {"player_client": [youtube_player_client]}}
     if kind == "audio":
         opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
     return {k: v for k, v in opts.items() if v is not None}
@@ -232,12 +274,16 @@ def process(job, kind):
     finally:
         db.close()
     try:
-        # First use the normal extractor. If YouTube rejects the anonymous web
-        # client, retry once with the public embedded client. This can recover
-        # publicly embeddable videos without attempting to bypass private/auth gates.
-        attempts = [ytdlp_options(job, kind)]
+        # Which YouTube player client currently avoids the "Sign in to confirm
+        # you're not a bot" wall shifts every few months as YouTube adjusts
+        # trust signals, so try several official clients in sequence instead
+        # of betting on just one. None of these bypass a login - they're all
+        # clients YouTube itself serves video to.
+        client_chain = [None, "tv", "android", "web_embedded"]
         if platform(url) == "youtube":
-            attempts.append(ytdlp_options(job, kind, youtube_embedded=True))
+            attempts = [ytdlp_options(job, kind, youtube_player_client=c) for c in client_chain]
+        else:
+            attempts = [ytdlp_options(job, kind)]
 
         last_exc = None
         info = None
@@ -249,8 +295,11 @@ def process(job, kind):
                 break
             except Exception as exc:
                 last_exc = exc
-                if attempt_no == 0 and platform(url) == "youtube" and youtube_needs_fallback(exc):
-                    log.warning("job=%s: normal YouTube client rejected; retrying public embedded client", job)
+                is_last_attempt = attempt_no == len(attempts) - 1
+                if platform(url) == "youtube" and not is_last_attempt:
+                    log.warning("job=%s: YouTube client %r failed (%s); trying next client", job,
+                                client_chain[attempt_no],
+                                "likely an auth wall" if youtube_needs_fallback(exc) else "error")
                     continue
                 # Instagram can change its public web/GraphQL responses independently
                 # of yt-dlp. For genuinely public posts, try the media URL exposed in
@@ -497,6 +546,7 @@ DEFAULT_SETTINGS = {
     "facebook_enabled": "true",
     "pinterest_enabled": "true",
     "x_enabled": "true",
+    "snapchat_enabled": "true",
     "web_enabled": "true",
 }
 
@@ -678,4 +728,3 @@ def admin_action(data: AdminAction, request: Request):
         else: db.execute(delete(Download))
         db.commit(); audit("admin_action",data.action); return {"ok":True,"removed":len(rows)}
     finally: db.close()
-
