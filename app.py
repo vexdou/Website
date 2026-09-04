@@ -1,4 +1,4 @@
-import os, re, time, uuid, mimetypes, logging, threading, ipaddress, socket, shutil, platform as py_platform
+import os, re, time, uuid, mimetypes, logging, threading, ipaddress, socket
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -67,7 +67,6 @@ def platform(url):
     if "instagram" in h or h == "instagr.am": return "instagram"
     if "facebook" in h or h in {"fb.watch", "fb.me"}: return "facebook"
     if "pinterest" in h or h == "pin.it": return "pinterest"
-    if "snapchat" in h or h == "snap.com": return "snapchat"
     if h in {"x.com", "twitter.com"}: return "x"
     return "web"
 
@@ -95,139 +94,58 @@ def allowed(url):
 
 
 def instagram_public_fallback(job, url, kind):
-    """Last-resort downloader for genuinely public Instagram pages.
-
-    It only follows media URLs exposed by the public page and never logs in,
-    uses cookies, or bypasses private/authenticated content.
+    """Best-effort fallback for media that Instagram exposes publicly in OG metadata.
+    This never supplies credentials and never attempts to bypass a login/private post.
     """
     if kind != "video":
         return None
-
-    headers_variants = [
-        {
-            "User-Agent": UA,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.instagram.com/",
-            "Cache-Control": "no-cache",
-        },
-        {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.instagram.com/",
-        },
-    ]
-    last_exc = None
-    for attempt, headers in enumerate(headers_variants):
-        try:
-            if attempt:
-                time.sleep(1.5)
-            r = requests.get(url, headers=headers, timeout=(20, 35), allow_redirects=True)
-            if r.status_code == 429:
-                time.sleep(3 + attempt * 2)
-                continue
-            r.raise_for_status()
-            html = r.text
-
-            # Public OG/Twitter metadata can contain the direct media URL.
-            patterns = [
-                r'<meta[^>]+property=["\']og:video(?::secure_url)?["\'][^>]+content=["\']([^"\']+)',
-                r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:video(?::secure_url)?["\']',
-                r'<meta[^>]+name=["\']twitter:player:stream["\'][^>]+content=["\']([^"\']+)',
-            ]
-            media_url = None
-            for pat in patterns:
-                m = re.search(pat, html, re.I)
-                if m:
-                    media_url = unescape(m.group(1)).replace('&amp;', '&')
-                    break
-
-            if not media_url or not media_url.startswith(("http://", "https://")):
-                continue
-
-            out = WORK / f"{job}.mp4"
-            media_headers = {
-                "User-Agent": headers["User-Agent"],
-                "Referer": "https://www.instagram.com/",
-                "Accept": "*/*",
-            }
-            with requests.get(media_url, headers=media_headers, stream=True,
-                               timeout=(20, 90), allow_redirects=True) as mr:
-                if mr.status_code == 429:
-                    time.sleep(3)
-                    continue
-                mr.raise_for_status()
-                total = 0
-                with open(out, "wb") as fh:
-                    for chunk in mr.iter_content(chunk_size=1024 * 256):
-                        if not chunk:
-                            continue
-                        total += len(chunk)
-                        if total > int(setting_get("max_file_mb") or MAX_FILE_MB) * 1024 * 1024:
-                            raise RuntimeError("Instagram media exceeds the configured file size limit")
-                        fh.write(chunk)
-
-            if total < 1:
-                out.unlink(missing_ok=True)
-                continue
-
-            title_m = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', html, re.I)
-            title = unescape(title_m.group(1)).strip()[:180] if title_m else "Instagram Media"
-            image_m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', html, re.I)
-            thumbnail = unescape(image_m.group(1)).replace('&amp;', '&') if image_m else None
-            return {"title": title, "thumbnail": thumbnail}
-        except Exception as exc:
-            last_exc = exc
-            log.info("job=%s: Instagram public fallback attempt %s unavailable: %s", job, attempt + 1, exc)
-
-    return None
-
-
-def ytdlp_options(job, kind, youtube_embedded=False, platform_name=None, client=None):
-    out = str(WORK / f"{job}.%(ext)s")
-    p = platform_name or ""
-    opts = {
-        "outtmpl": out,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "retries": 5,
-        "extractor_retries": 5,
-        "fragment_retries": 5,
-        "file_access_retries": 3,
-        "socket_timeout": 60,
-        "concurrent_fragment_downloads": 1,
-        "skip_unavailable_fragments": True,
-        "restrictfilenames": True,
-        "windowsfilenames": True,
-        "http_headers": {"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"},
-        "format": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b" if kind == "video" else "ba/b",
-        "merge_output_format": "mp4" if kind == "video" else None,
-        "max_filesize": int(setting_get("max_file_mb") or MAX_FILE_MB) * 1024 * 1024,
-        "js_runtimes": {"node": {}},
-        # curl_cffi is installed in the production image and lets yt-dlp
-        # impersonate a normal browser for sources that reject plain requests.
-        "impersonate": client or "chrome",
-        "extractor_args": {},
+    headers = {
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.instagram.com/",
+        "Cache-Control": "no-cache",
     }
-
-    if youtube_embedded:
-        opts["extractor_args"] = {"youtube": {"player_client": ["web_embedded"]}}
-
-    if p == "instagram":
-        opts["extractor_args"] = {"instagram": {"include": ["video"]}}
-    elif p == "youtube" and client == "chrome":
-        # Keep the default YouTube client first; the embedded client is tried
-        # separately below if the source asks for sign-in/anti-bot checks.
-        pass
-
-    if kind == "audio":
-        opts["postprocessors"] = [
-            {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
+    try:
+        r = requests.get(url, headers=headers, timeout=(15, 30), allow_redirects=True)
+        r.raise_for_status()
+        html = r.text
+        # Only use media explicitly published in public OpenGraph metadata.
+        patterns = [
+            r'<meta[^>]+property=["\']og:video(?::secure_url)?["\'][^>]+content=["\']([^"\']+)',
+            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:video(?::secure_url)?["\']',
         ]
-    return {k: v for k, v in opts.items() if v is not None}
-
+        media_url = None
+        for pat in patterns:
+            m = re.search(pat, html, re.I)
+            if m:
+                media_url = unescape(m.group(1)).replace('&amp;', '&')
+                break
+        if not media_url or not media_url.startswith(('http://', 'https://')):
+            return None
+        out = WORK / f"{job}.mp4"
+        with requests.get(media_url, headers={"User-Agent": UA, "Referer": "https://www.instagram.com/"}, stream=True, timeout=(15, 60), allow_redirects=True) as mr:
+            mr.raise_for_status()
+            total = 0
+            with open(out, 'wb') as fh:
+                for chunk in mr.iter_content(chunk_size=1024 * 256):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > int(setting_get("max_file_mb") or MAX_FILE_MB) * 1024 * 1024:
+                        raise RuntimeError("Instagram media exceeds the configured file size limit")
+                    fh.write(chunk)
+        if total < 1:
+            out.unlink(missing_ok=True)
+            return None
+        title_m = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', html, re.I)
+        title = unescape(title_m.group(1)).strip()[:180] if title_m else "Instagram Media"
+        image_m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', html, re.I)
+        thumbnail = unescape(image_m.group(1)).replace('&amp;', '&') if image_m else None
+        return {"title": title, "thumbnail": thumbnail}
+    except Exception as exc:
+        log.info("job=%s: Instagram public metadata fallback unavailable: %s", job, exc)
+        return None
 
 def human_error(exc):
     text = re.sub(r"\s+", " ", str(exc)).strip()
@@ -309,32 +227,17 @@ def process(job, kind):
     db = Session()
     try:
         row = db.scalar(select(Download).where(Download.job_id == job))
-        if not row:
-            return
+        if not row: return
         url = row.url
     finally:
         db.close()
-
-    p = platform(url)
     try:
-        # Use several legitimate extractor/client profiles. This is especially
-        # useful for YouTube/Instagram where the source may reject one client.
-        attempts = []
-        if p == "youtube":
-            attempts = [
-                ytdlp_options(job, kind, platform_name=p, client="chrome"),
-                ytdlp_options(job, kind, youtube_embedded=True, platform_name=p, client="chrome"),
-            ]
-        elif p == "instagram":
-            attempts = [
-                ytdlp_options(job, kind, platform_name=p, client="chrome"),
-                ytdlp_options(job, kind, platform_name=p, client="safari"),
-            ]
-        else:
-            attempts = [
-                ytdlp_options(job, kind, platform_name=p, client="chrome"),
-                ytdlp_options(job, kind, platform_name=p, client="safari"),
-            ]
+        # First use the normal extractor. If YouTube rejects the anonymous web
+        # client, retry once with the public embedded client. This can recover
+        # publicly embeddable videos without attempting to bypass private/auth gates.
+        attempts = [ytdlp_options(job, kind)]
+        if platform(url) == "youtube":
+            attempts.append(ytdlp_options(job, kind, youtube_embedded=True))
 
         last_exc = None
         info = None
@@ -346,67 +249,42 @@ def process(job, kind):
                 break
             except Exception as exc:
                 last_exc = exc
-                log.warning("job=%s platform=%s extractor attempt=%s failed: %s",
-                            job, p, attempt_no + 1, exc)
-
-                # Rate limits are retried with increasing delays instead of
-                # immediately exposing the raw 429 message to the visitor.
-                low = str(exc).lower()
-                if any(x in low for x in ("429", "too many requests", "rate-limit", "rate limited")):
-                    time.sleep(min(12, 2 + attempt_no * 3))
-
-                if p == "instagram" and attempt_no == len(attempts) - 1:
+                if attempt_no == 0 and platform(url) == "youtube" and youtube_needs_fallback(exc):
+                    log.warning("job=%s: normal YouTube client rejected; retrying public embedded client", job)
+                    continue
+                # Instagram can change its public web/GraphQL responses independently
+                # of yt-dlp. For genuinely public posts, try the media URL exposed in
+                # the page's OpenGraph metadata. This does not authenticate or bypass access controls.
+                if platform(url) == "instagram":
                     cleanup_job(job)
                     fallback_info = instagram_public_fallback(job, url, kind)
                     if fallback_info:
                         info = fallback_info
-                        log.info("job=%s: Instagram public metadata fallback succeeded", job)
+                        log.info("job=%s: Instagram public OG fallback succeeded", job)
                         break
-
-                # Only continue to the next profile for known access/client
-                # failures; don't mask unrelated coding/configuration errors.
-                if attempt_no < len(attempts) - 1:
-                    continue
                 raise
-
         if info is None:
             raise last_exc or RuntimeError("No media information was returned")
 
-        files = [
-            f for f in WORK.glob(f"{job}.*")
-            if f.is_file() and f.suffix not in {".part", ".ytdl"}
-        ]
-        if not files:
-            raise RuntimeError("No media file was created")
-
+        files = [f for f in WORK.glob(f"{job}.*") if f.is_file() and f.suffix not in {".part", ".ytdl"}]
+        if not files: raise RuntimeError("No media file was created")
         media = max(files, key=lambda f: f.stat().st_size)
-        if media.stat().st_size < 1:
-            raise RuntimeError("Downloaded file is empty")
-
-        ctype = mimetypes.guess_type(media.name)[0] or (
-            "audio/mpeg" if kind == "audio" else "video/mp4"
-        )
+        if media.stat().st_size < 1: raise RuntimeError("Downloaded file is empty")
+        ctype = mimetypes.guess_type(media.name)[0] or ("audio/mpeg" if kind == "audio" else "video/mp4")
         title = re.sub(r"\s+", " ", info.get("title") or "Media").strip()[:180]
-
         db = Session()
         try:
             db.execute(update(Download).where(Download.job_id == job).values(
-                title=title,
-                thumbnail=info.get("thumbnail"),
-                filename=media.name,
-                content_type=ctype,
-                status="completed",
-                error=None
+                title=title, thumbnail=info.get("thumbnail"), filename=media.name,
+                content_type=ctype, status="completed", error=None
             ))
             db.commit()
         finally:
             db.close()
-
     except Exception as exc:
         log.exception("job=%s failed", job)
         mark_failed(job, exc)
         cleanup_job(job)
-
 
 def claim_one():
     db = Session()
@@ -448,7 +326,7 @@ def worker_loop():
                 cleanup_old(); last = time.time()
             item = claim_one()
             if item: process(*item)
-            else: time.sleep(float(setting_get("worker_poll_seconds") or os.getenv("WORKER_POLL_SECONDS", "0.7")))
+            else: time.sleep(float(os.getenv("WORKER_POLL_SECONDS", "0.7")))
         except Exception:
             log.exception("worker error"); time.sleep(2)
 
@@ -457,7 +335,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="10.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="9.4.0", lifespan=lifespan)
 
 @app.get("/")
 def home():
@@ -618,11 +496,8 @@ DEFAULT_SETTINGS = {
     "instagram_enabled": "true",
     "facebook_enabled": "true",
     "pinterest_enabled": "true",
-    "snapchat_enabled": "true",
     "x_enabled": "true",
     "web_enabled": "true",
-    "max_concurrent_downloads": "1",
-    "worker_poll_seconds": "0.7",
 }
 
 def setting_get(key):
@@ -729,7 +604,7 @@ def admin_overview(request: Request):
             status[r.status] = status.get(r.status, 0) + 1
             p = platform(r.url); plats[p] = plats.get(p, 0) + 1
         users = len({r.visitor_id for r in rows})
-        return {"version":"10.0.0-admin18", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
+        return {"version":"9.2.0-admin18", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
     finally: db.close()
 
 @app.get("/api/admin/users")
@@ -787,103 +662,19 @@ def admin_settings(data: AdminSettingUpdate, request: Request):
         db.commit(); audit("settings_updated", ", ".join(changed)); return {"ok":True,"settings":settings_all()}
     finally: db.close()
 
-
-@app.get("/api/admin/system")
-def admin_system(request: Request):
-    require_admin(request)
-    total, used, free = shutil.disk_usage(WORK)
-    db = Session()
-    try:
-        queued = db.scalar(select(Download.id).where(Download.status=="queued")) if False else len(db.scalars(select(Download.id).where(Download.status=="queued")).all())
-        downloading = len(db.scalars(select(Download.id).where(Download.status=="downloading")).all())
-        failed = len(db.scalars(select(Download.id).where(Download.status=="failed")).all())
-        return {
-            "ok": True,
-            "python": py_platform.python_version(),
-            "os": py_platform.platform(),
-            "cpu_count": os.cpu_count(),
-            "disk_total_gb": round(total/1024**3,2),
-            "disk_used_gb": round(used/1024**3,2),
-            "disk_free_gb": round(free/1024**3,2),
-            "queue": queued,
-            "downloading": downloading,
-            "failed": failed,
-            "work_dir": str(WORK),
-            "database": "configured",
-            "yt_dlp": getattr(yt_dlp.version, "__version__", "unknown"),
-            "node": shutil.which("node") or "not found",
-            "ffmpeg": shutil.which("ffmpeg") or "not found",
-            "curl_cffi": _module_version("curl_cffi"),
-        }
-    finally:
-        db.close()
-
-def _module_version(name):
-    try:
-        mod=__import__(name)
-        return getattr(mod,"__version__","installed")
-    except Exception:
-        return "not installed"
-
-@app.get("/api/admin/queue")
-def admin_queue(request: Request):
-    require_admin(request)
-    db=Session()
-    try:
-        rows=db.scalars(select(Download).where(
-            Download.status.in_(["queued","downloading"])
-        ).order_by(Download.created_at.asc()).limit(300)).all()
-        return {"items":[
-            {"job_id":r.job_id,"platform":platform(r.url),"title":r.title,
-             "status":r.status,"kind":r.kind,
-             "created_at":r.created_at.isoformat() if r.created_at else None}
-            for r in rows
-        ]}
-    finally:
-        db.close()
-
-@app.get("/api/admin/export")
-def admin_export(request: Request):
-    require_admin(request)
-    db=Session()
-    try:
-        rows=db.scalars(select(Download).order_by(Download.created_at.desc()).limit(5000)).all()
-        return {
-            "exported_at": datetime.now(timezone.utc).isoformat(),
-            "downloads":[
-                {"job_id":r.job_id,"visitor_id":r.visitor_id,"url":r.url,
-                 "title":r.title,"platform":platform(r.url),"kind":r.kind,
-                 "status":r.status,"error":r.error,
-                 "created_at":r.created_at.isoformat() if r.created_at else None}
-                for r in rows
-            ],
-            "settings": settings_all(),
-        }
-    finally:
-        db.close()
-
 @app.post("/api/admin/action")
 def admin_action(data: AdminAction, request: Request):
     require_admin(request)
-    actions={"clear_failed","clear_completed","clear_all","clear_queued","retry_job"}
+    actions={"clear_failed","clear_completed","clear_all"}
     if data.action not in actions: raise HTTPException(400,"Unknown action")
     db=Session()
     try:
-        if data.action=="retry_job":
-            if not data.value: raise HTTPException(400,"job_id is required")
-            row=db.scalar(select(Download).where(Download.job_id==data.value))
-            if not row: raise HTTPException(404,"Job not found")
-            cleanup_job(row.job_id)
-            row.status="queued"; row.error=None; row.filename=None; row.content_type=None
-            db.commit(); audit("retry_job", data.value); return {"ok":True,"job_id":data.value}
         if data.action=="clear_failed": rows=db.scalars(select(Download).where(Download.status=="failed")).all()
         elif data.action=="clear_completed": rows=db.scalars(select(Download).where(Download.status=="completed")).all()
-        elif data.action=="clear_queued": rows=db.scalars(select(Download).where(Download.status.in_(["queued","downloading"]))).all()
         else: rows=db.scalars(select(Download)).all()
         for r in rows: cleanup_job(r.job_id)
         if data.action=="clear_failed": db.execute(delete(Download).where(Download.status=="failed"))
         elif data.action=="clear_completed": db.execute(delete(Download).where(Download.status=="completed"))
-        elif data.action=="clear_queued": db.execute(delete(Download).where(Download.status.in_(["queued","downloading"])))
         else: db.execute(delete(Download))
         db.commit(); audit("admin_action",data.action); return {"ok":True,"removed":len(rows)}
     finally: db.close()
