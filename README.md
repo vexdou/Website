@@ -15,12 +15,4 @@ Deploy the repository to Render using the included Dockerfile/render.yaml. The D
 
 Support: costumer@quickdl.site
 
-## Admin18
-Open `/admin18` for the private administration console. Configure these Render environment variables before using it:
-
-- `ADMIN_PASSWORD` — strong admin password; never commit it to Git.
-- `ADMIN_SESSION_SECRET` — long random secret used to sign the admin session cookie.
-
-Admin18 includes dashboard, users, downloads, analytics, platform switches, error center, audit logs, website settings, maintenance mode, announcement control, runtime limits, and emergency download controls. Settings are stored in PostgreSQL.
-
 For a quick emergency stop, use **Settings → Downloads enabled** or **Security → Disable downloads**. The public site remains separate from the admin console.
