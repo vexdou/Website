@@ -54,51 +54,6 @@ UA = os.getenv(
 )
 MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "300"))
 KEEP_FILE_HOURS = float(os.getenv("KEEP_FILE_HOURS", "6"))
-POT_PROVIDER_ENABLED = os.getenv("POT_PROVIDER_ENABLED", "1").lower() not in {"0", "false", "no", "off"}
-POT_PROVIDER_PORT = int(os.getenv("POT_PROVIDER_PORT", "4416"))
-POT_PROVIDER_BASE_URL = os.getenv("POT_PROVIDER_BASE_URL", f"http://127.0.0.1:{POT_PROVIDER_PORT}")
-POT_PROCESS = None
-
-def start_pot_provider():
-    global POT_PROCESS
-    if not POT_PROVIDER_ENABLED:
-        log.info("YouTube PO-token provider disabled by environment")
-        return
-    server = os.getenv("POT_PROVIDER_SERVER", "/opt/bgutil/server/build/main.js")
-    if not Path(server).exists():
-        log.warning("PO-token provider server not found at %s; continuing without HTTP provider", server)
-        return
-    try:
-        POT_PROCESS = subprocess.Popen(
-            ["node", server, "--port", str(POT_PROVIDER_PORT)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        for _ in range(40):
-            if POT_PROCESS.poll() is not None:
-                log.warning("PO-token provider exited during startup (code=%s)", POT_PROCESS.returncode)
-                POT_PROCESS = None
-                return
-            try:
-                with urllib.request.urlopen(POT_PROVIDER_BASE_URL + "/ping", timeout=1) as r:
-                    if 200 <= r.status < 300:
-                        log.info("YouTube PO-token provider ready on %s", POT_PROVIDER_BASE_URL)
-                        return
-            except Exception:
-                time.sleep(0.25)
-        log.warning("PO-token provider did not become ready; continuing without HTTP provider")
-    except Exception as exc:
-        log.warning("Could not start PO-token provider: %s", exc)
-
-def stop_pot_provider():
-    global POT_PROCESS
-    if POT_PROCESS and POT_PROCESS.poll() is None:
-        try:
-            POT_PROCESS.terminate(); POT_PROCESS.wait(timeout=5)
-        except Exception:
-            try: POT_PROCESS.kill()
-            except Exception: pass
-    POT_PROCESS = None
 
 def hostname(url):
     return (urlparse(url).hostname or "").lower().rstrip(".")
@@ -183,11 +138,6 @@ def ytdlp_options(job, kind, youtube_embedded=False):
     # that are publicly embeddable; it does not grant access to private/auth-only media.
     if youtube_embedded:
         opts["extractor_args"] = {"youtube": {"player_client": ["web_embedded"]}}
-    else:
-        opts["extractor_args"] = {
-            "youtube": {"player_client": ["mweb", "web_safari"]},
-            "youtubepot-bgutilhttp": {"base_url": [POT_PROVIDER_BASE_URL]},
-        }
     if kind == "audio":
         opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
     return {k: v for k, v in opts.items() if v is not None}
@@ -314,13 +264,10 @@ def worker_loop():
 
 @asynccontextmanager
 async def lifespan(app):
-    recover_stuck()
-    start_pot_provider()
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
-    stop_pot_provider()
 
-app = FastAPI(title="QuickDL", version="9.4.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="9.2.0", lifespan=lifespan)
 
 @app.get("/")
 def home():
@@ -589,7 +536,7 @@ def admin_overview(request: Request):
             status[r.status] = status.get(r.status, 0) + 1
             p = platform(r.url); plats[p] = plats.get(p, 0) + 1
         users = len({r.visitor_id for r in rows})
-        return {"version":"9.4.0-admin18-pot", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
+        return {"version":"9.2.0-admin18", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
     finally: db.close()
 
 @app.get("/api/admin/users")
