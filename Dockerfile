@@ -15,6 +15,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 COPY . .
-RUN mkdir -p /tmp/quickdl && node --version && python -c "import yt_dlp; print('yt-dlp', yt_dlp.version.__version__)"
+RUN mkdir -p /tmp/quickdl && node --version && python -c "import yt_dlp; print('yt-dlp', yt_dlp.version.__version__); import requests; print('requests', requests.__version__)"
 EXPOSE 10000
 CMD ["uvicorn","app:app","--host","0.0.0.0","--port","10000"]

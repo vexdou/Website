@@ -4,6 +4,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import yt_dlp
+import requests
+from html import unescape
 from fastapi import FastAPI, HTTPException, Cookie
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, HttpUrl
@@ -89,6 +91,62 @@ def allowed(url):
     except Exception:
         return False
 
+
+
+def instagram_public_fallback(job, url, kind):
+    """Best-effort fallback for media that Instagram exposes publicly in OG metadata.
+    This never supplies credentials and never attempts to bypass a login/private post.
+    """
+    if kind != "video":
+        return None
+    headers = {
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.instagram.com/",
+        "Cache-Control": "no-cache",
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=(15, 30), allow_redirects=True)
+        r.raise_for_status()
+        html = r.text
+        # Only use media explicitly published in public OpenGraph metadata.
+        patterns = [
+            r'<meta[^>]+property=["\']og:video(?::secure_url)?["\'][^>]+content=["\']([^"\']+)',
+            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:video(?::secure_url)?["\']',
+        ]
+        media_url = None
+        for pat in patterns:
+            m = re.search(pat, html, re.I)
+            if m:
+                media_url = unescape(m.group(1)).replace('&amp;', '&')
+                break
+        if not media_url or not media_url.startswith(('http://', 'https://')):
+            return None
+        out = WORK / f"{job}.mp4"
+        with requests.get(media_url, headers={"User-Agent": UA, "Referer": "https://www.instagram.com/"}, stream=True, timeout=(15, 60), allow_redirects=True) as mr:
+            mr.raise_for_status()
+            total = 0
+            with open(out, 'wb') as fh:
+                for chunk in mr.iter_content(chunk_size=1024 * 256):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > int(setting_get("max_file_mb") or MAX_FILE_MB) * 1024 * 1024:
+                        raise RuntimeError("Instagram media exceeds the configured file size limit")
+                    fh.write(chunk)
+        if total < 1:
+            out.unlink(missing_ok=True)
+            return None
+        title_m = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', html, re.I)
+        title = unescape(title_m.group(1)).strip()[:180] if title_m else "Instagram Media"
+        image_m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', html, re.I)
+        thumbnail = unescape(image_m.group(1)).replace('&amp;', '&') if image_m else None
+        return {"title": title, "thumbnail": thumbnail}
+    except Exception as exc:
+        log.info("job=%s: Instagram public metadata fallback unavailable: %s", job, exc)
+        return None
+
 def human_error(exc):
     text = re.sub(r"\s+", " ", str(exc)).strip()
     low = text.lower()
@@ -110,7 +168,7 @@ def human_error(exc):
         return "The source took too long to respond. Please try again."
     return text[:700] or "Download failed. Please try another media URL."
 
-def ytdlp_options(job, kind, youtube_embedded=False, source_url=None):
+def ytdlp_options(job, kind, youtube_embedded=False):
     out = str(WORK / f"{job}.%(ext)s")
     opts = {
         "outtmpl": out,
@@ -132,20 +190,12 @@ def ytdlp_options(job, kind, youtube_embedded=False, source_url=None):
         # YouTube now relies on yt-dlp EJS challenge solving. Node 22 is
         # explicitly enabled here because current yt-dlp requires Node >=22.
         "js_runtimes": {"node": {}},
-        # Keep request volume conservative. A 429 is a source-side rate limit,
-        # not a local download bug; slowing retries prevents making the block worse.
-        "sleep_interval_requests": 1,
-        "retry_sleep_functions": {"http": lambda n: min(30, 2 ** min(n, 4))},
     }
     # YouTube increasingly protects some normal web requests with sign-in/PO-token
     # checks. The embedded client is an official yt-dlp client intended for videos
     # that are publicly embeddable; it does not grant access to private/auth-only media.
     if youtube_embedded:
         opts["extractor_args"] = {"youtube": {"player_client": ["web_embedded"]}}
-    if source_url and platform(source_url) == "instagram":
-        # Uses curl_cffi's browser-like TLS/HTTP fingerprinting. This is not an
-        # authentication mechanism and does not bypass Instagram access controls.
-        opts["impersonate"] = "chrome"
     if kind == "audio":
         opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
     return {k: v for k, v in opts.items() if v is not None}
@@ -185,9 +235,9 @@ def process(job, kind):
         # First use the normal extractor. If YouTube rejects the anonymous web
         # client, retry once with the public embedded client. This can recover
         # publicly embeddable videos without attempting to bypass private/auth gates.
-        attempts = [ytdlp_options(job, kind, source_url=url)]
+        attempts = [ytdlp_options(job, kind)]
         if platform(url) == "youtube":
-            attempts.append(ytdlp_options(job, kind, youtube_embedded=True, source_url=url))
+            attempts.append(ytdlp_options(job, kind, youtube_embedded=True))
 
         last_exc = None
         info = None
@@ -202,6 +252,16 @@ def process(job, kind):
                 if attempt_no == 0 and platform(url) == "youtube" and youtube_needs_fallback(exc):
                     log.warning("job=%s: normal YouTube client rejected; retrying public embedded client", job)
                     continue
+                # Instagram can change its public web/GraphQL responses independently
+                # of yt-dlp. For genuinely public posts, try the media URL exposed in
+                # the page's OpenGraph metadata. This does not authenticate or bypass access controls.
+                if platform(url) == "instagram":
+                    cleanup_job(job)
+                    fallback_info = instagram_public_fallback(job, url, kind)
+                    if fallback_info:
+                        info = fallback_info
+                        log.info("job=%s: Instagram public OG fallback succeeded", job)
+                        break
                 raise
         if info is None:
             raise last_exc or RuntimeError("No media information was returned")
@@ -544,7 +604,7 @@ def admin_overview(request: Request):
             status[r.status] = status.get(r.status, 0) + 1
             p = platform(r.url); plats[p] = plats.get(p, 0) + 1
         users = len({r.visitor_id for r in rows})
-        return {"version":"9.4.0-admin18", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
+        return {"version":"9.2.0-admin18", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
     finally: db.close()
 
 @app.get("/api/admin/users")
