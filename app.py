@@ -7,12 +7,13 @@ from urllib.parse import urlparse
 import yt_dlp
 import requests
 from html import unescape
-from fastapi import FastAPI, HTTPException, Cookie
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Cookie, Request
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy import create_engine, String, Text, Integer, DateTime, select, update, delete
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from contextlib import asynccontextmanager
+import hashlib, hmac, base64, json
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("quickdl")
@@ -49,19 +50,72 @@ class Download(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
+class AdminSetting(Base):
+    __tablename__ = "admin_settings"
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+class AdminAudit(Base):
+    __tablename__ = "admin_audit"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    action: Mapped[str] = mapped_column(String(160))
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
 Base.metadata.create_all(engine)
 
 UA = os.getenv(
     "DOWNLOADER_USER_AGENT",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36"
 )
-MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "300"))
+MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "500")) # Kordhiyay si uu u qaado video-yada dheer ee ilaa 20 min ah
 KEEP_FILE_HOURS = float(os.getenv("KEEP_FILE_HOURS", "6"))
-# Optional: path to a Netscape-format cookies.txt (see yt-dlp's --cookies docs).
-# Only used if you choose to set it - never required, and never populated
-# automatically. This is a per-deployment opt-in, not something this code does
-# on its own.
 COOKIES_FILE = Path(os.getenv("YTDLP_COOKIES_FILE")) if os.getenv("YTDLP_COOKIES_FILE") else None
+
+DEFAULT_SETTINGS = {
+    "maintenance": "false",
+    "maintenance_message": "QuickDL is temporarily under maintenance. Please try again shortly.",
+    "announcement_enabled": "false",
+    "announcement": "",
+    "max_file_mb": str(MAX_FILE_MB),
+    "keep_file_hours": str(KEEP_FILE_HOURS),
+    "downloads_enabled": "true",
+    "youtube_enabled": "true",
+    "tiktok_enabled": "true",
+    "instagram_enabled": "true",
+    "facebook_enabled": "true",
+    "pinterest_enabled": "true",
+    "x_enabled": "true",
+    "snapchat_enabled": "true",
+    "web_enabled": "true",
+}
+
+def setting_get(key):
+    db = Session()
+    try:
+        row = db.get(AdminSetting, key)
+        return row.value if row else DEFAULT_SETTINGS.get(key, "")
+    finally:
+        db.close()
+
+def settings_all():
+    db = Session()
+    try:
+        vals = dict(DEFAULT_SETTINGS)
+        for row in db.scalars(select(AdminSetting)).all(): vals[row.key] = row.value
+        return vals
+    finally: db.close()
+
+def setting_bool(key):
+    return setting_get(key).lower() in {"1", "true", "yes", "on"}
+
+def audit(action, detail=""):
+    db = Session()
+    try:
+        db.add(AdminAudit(action=action, detail=detail[:1000]))
+        db.commit()
+    finally: db.close()
 
 def hostname(url):
     return (urlparse(url).hostname or "").lower().rstrip(".")
@@ -98,13 +152,7 @@ def allowed(url):
     except Exception:
         return False
 
-
 def load_requests_cookies():
-    """Parse the Netscape-format cookies.txt (if configured) into a dict
-    that `requests` can use. Returns None if no cookies file is set/found.
-    This mirrors the same COOKIES_FILE already used for yt-dlp - it does not
-    add any new credential source, it just reuses the operator-provided file
-    for the plain `requests` calls in the Instagram OG-metadata fallback."""
     if not COOKIES_FILE or not COOKIES_FILE.exists():
         return None
     try:
@@ -115,16 +163,7 @@ def load_requests_cookies():
         log.warning("Failed to parse cookies file for requests: %s", exc)
         return None
 
-
 def instagram_public_fallback(job, url, kind, max_retries=3):
-    """Best-effort fallback for media that Instagram exposes publicly in OG metadata.
-    This never supplies credentials beyond an operator-provided cookies file and
-    never attempts to bypass a login/private post: if a post needs a login, every
-    URL below will also just return the login wall (or nothing), same as the main
-    extractor, and this simply returns None.
-    Retries on 429/403 with exponential backoff since Instagram frequently
-    throttles rather than permanently blocking a given request.
-    """
     if kind != "video":
         return None
     headers = {
@@ -135,11 +174,6 @@ def instagram_public_fallback(job, url, kind, max_retries=3):
         "Cache-Control": "no-cache",
     }
     cookies = load_requests_cookies()
-    # Instagram's own embed page is meant for third-party sites to render a
-    # public post and is more likely to include a server-rendered <video>/OG
-    # tag than the main post page, which increasingly leaves a plain,
-    # logged-out fetch with an empty shell. Try it first, then fall back to
-    # the direct URL.
     candidates = [url]
     shortcode_m = re.search(r"/(p|reel|tv)/([^/?#]+)", urlparse(url).path)
     if shortcode_m:
@@ -153,24 +187,12 @@ def instagram_public_fallback(job, url, kind, max_retries=3):
                     r = requests.get(candidate, headers=headers, cookies=cookies,
                                       timeout=(15, 30), allow_redirects=True)
                     if r.status_code in (429, 403) and attempt < max_retries - 1:
-                        wait = (2 ** attempt) + 0.5  # 1.5s, 2.5s, 4.5s...
-                        log.info("job=%s: Instagram returned %s on %s, retrying in %.1fs (attempt %d/%d)",
-                                  job, r.status_code, candidate, wait, attempt + 1, max_retries)
+                        wait = (2 ** attempt) + 0.5
                         time.sleep(wait)
                         continue
                     r.raise_for_status()
                     break
-                except requests.HTTPError as exc:
-                    status = getattr(exc.response, "status_code", None)
-                    if attempt < max_retries - 1 and status in (429, 403):
-                        wait = (2 ** attempt) + 0.5
-                        time.sleep(wait)
-                        continue
-                    log.info("job=%s: Instagram public fetch of %s failed: %s", job, candidate, exc)
-                    r = None
-                    break
-                except Exception as exc:
-                    log.info("job=%s: Instagram public fetch of %s unavailable: %s", job, candidate, exc)
+                except Exception:
                     r = None
                     break
             if r is None:
@@ -180,7 +202,6 @@ def instagram_public_fallback(job, url, kind, max_retries=3):
                 break
         if not html:
             return None
-        # Only use media explicitly published in public OpenGraph/page metadata.
         patterns = [
             r'<meta[^>]+property=["\']og:video(?::secure_url)?["\'][^>]+content=["\']([^"\']+)',
             r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:video(?::secure_url)?["\']',
@@ -201,10 +222,7 @@ def instagram_public_fallback(job, url, kind, max_retries=3):
                 with requests.get(media_url, headers={"User-Agent": UA, "Referer": "https://www.instagram.com/"},
                                    cookies=cookies, stream=True, timeout=(15, 60), allow_redirects=True) as mr:
                     if mr.status_code in (429, 403) and attempt < max_retries - 1:
-                        wait = (2 ** attempt) + 0.5
-                        log.info("job=%s: Instagram media fetch got %s, retrying in %.1fs (attempt %d/%d)",
-                                  job, mr.status_code, wait, attempt + 1, max_retries)
-                        time.sleep(wait)
+                        time.sleep((2 ** attempt) + 0.5)
                         continue
                     mr.raise_for_status()
                     total = 0
@@ -217,13 +235,9 @@ def instagram_public_fallback(job, url, kind, max_retries=3):
                                 raise RuntimeError("Instagram media exceeds the configured file size limit")
                             fh.write(chunk)
                     break
-            except requests.HTTPError as exc:
-                status = getattr(exc.response, "status_code", None)
-                if attempt < max_retries - 1 and status in (429, 403):
-                    wait = (2 ** attempt) + 0.5
-                    time.sleep(wait)
-                    continue
-                raise
+            except Exception:
+                if attempt == max_retries - 1:
+                    raise
         if total < 1:
             out.unlink(missing_ok=True)
             return None
@@ -248,17 +262,13 @@ def human_error(exc):
     if "drm" in low:
         return "This media is DRM-protected and cannot be downloaded."
     if "429" in low or "too many requests" in low or "rate-limit" in low:
-        return "The source temporarily rate-limited this server. Please try again later."
+        return "The source temporarily rate-listed this server. Please try again later."
     if "403" in low or "forbidden" in low:
         return "The source refused automated access to this media."
     if "unsupported url" in low or "no suitable extractor" in low:
         return "This URL is not supported by the media extractor."
     if "timed out" in low or "timeout" in low:
         return "The source took too long to respond. Please try again."
-    if "javascript runtime" in low or "js runtime" in low:
-        return "Server misconfiguration: no JavaScript runtime is installed for this platform. Contact the site operator."
-    if "impersonat" in low or "curl_cffi" in low:
-        return "Server misconfiguration: a required dependency (curl_cffi) is missing for this platform. Contact the site operator."
     return text[:700] or "Download failed. Please try another media URL."
 
 def ytdlp_options(job, kind, youtube_player_client=None):
@@ -268,35 +278,23 @@ def ytdlp_options(job, kind, youtube_player_client=None):
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
-        "retries": 3,
-        "fragment_retries": 3,
-        "file_access_retries": 2,
-        "socket_timeout": 45,
-        "concurrent_fragment_downloads": 1,
+        "retries": 5,
+        "fragment_retries": 5,
+        "file_access_retries": 3,
+        "socket_timeout": 60,
+        "concurrent_fragment_downloads": 2,
         "skip_unavailable_fragments": True,
         "restrictfilenames": True,
         "windowsfilenames": True,
         "http_headers": {"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"},
+        # Optimiziiyey inuu si fiican u soo dejiyo labadaba Shorts iyo Videos dhaadheer (ilaa 20 min)
         "format": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b" if kind == "video" else "ba/b",
         "merge_output_format": "mp4" if kind == "video" else None,
         "max_filesize": int(setting_get("max_file_mb") or MAX_FILE_MB) * 1024 * 1024,
-        # YouTube's signature/throttling challenges now require executing the
-        # site's own JS via an external runtime (yt-dlp's "EJS" system). List
-        # every runtime this deployment might have installed rather than
-        # forcing one - yt-dlp uses whichever is actually present instead of
-        # hard failing when only one of them is available. Install at least
-        # one of these on the host/container (Deno is the simplest: a single
-        # static binary, no version-management needed) alongside the
-        # `yt-dlp-ejs` package pulled in via requirements.txt.
         "js_runtimes": {"deno": {}, "node": {}, "quickjs": {}},
     }
     if COOKIES_FILE and COOKIES_FILE.exists():
         opts["cookiefile"] = str(COOKIES_FILE)
-    # YouTube's anonymous "web" client increasingly hits a "Sign in to confirm
-    # you're not a bot" wall. These are all official yt-dlp player clients that
-    # YouTube itself serves video to - not a login bypass - but which one is
-    # currently trusted shifts every few months, so the caller tries several
-    # in sequence (see the client_chain in process()) instead of just one.
     if youtube_player_client:
         opts["extractor_args"] = {"youtube": {"player_client": [youtube_player_client]}}
     if kind == "audio":
@@ -335,11 +333,6 @@ def process(job, kind):
     finally:
         db.close()
     try:
-        # Which YouTube player client currently avoids the "Sign in to confirm
-        # you're not a bot" wall shifts every few months as YouTube adjusts
-        # trust signals, so try several official clients in sequence instead
-        # of betting on just one. None of these bypass a login - they're all
-        # clients YouTube itself serves video to.
         client_chain = [None, "tv", "android", "web_embedded"]
         if platform(url) == "youtube":
             attempts = [ytdlp_options(job, kind, youtube_player_client=c) for c in client_chain]
@@ -358,13 +351,8 @@ def process(job, kind):
                 last_exc = exc
                 is_last_attempt = attempt_no == len(attempts) - 1
                 if platform(url) == "youtube" and not is_last_attempt:
-                    log.warning("job=%s: YouTube client %r failed (%s); trying next client", job,
-                                client_chain[attempt_no],
-                                "likely an auth wall" if youtube_needs_fallback(exc) else "error")
+                    log.warning("job=%s: YouTube client %r failed; trying next client", job, client_chain[attempt_no])
                     continue
-                # Instagram can change its public web/GraphQL responses independently
-                # of yt-dlp. For genuinely public posts, try the media URL exposed in
-                # the page's OpenGraph metadata. This does not authenticate or bypass access controls.
                 if platform(url) == "instagram":
                     cleanup_job(job)
                     fallback_info = instagram_public_fallback(job, url, kind)
@@ -445,11 +433,11 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="9.4.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="9.5.0", lifespan=lifespan)
 
 @app.get("/")
 def home():
-    if "setting_bool" in globals() and setting_bool("maintenance"):
+    if setting_bool("maintenance"):
         return FileResponse(BASE / "templates" / "maintenance.html")
     return FileResponse(BASE / "templates" / "index.html")
 
@@ -471,7 +459,7 @@ def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "9.4.0"}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "9.5.0"}
     finally: db.close()
 
 class DownloadRequest(BaseModel):
@@ -569,73 +557,10 @@ def file(job: str, vexdou_visitor: str | None = Cookie(default=None)):
     finally:
         db.close()
 
-# --- Admin18 control center ---
-from fastapi import Request
-from fastapi.responses import HTMLResponse
-from sqlalchemy import Float, Boolean
-import hashlib, hmac, base64, json
-
-class AdminSetting(Base):
-    __tablename__ = "admin_settings"
-    key: Mapped[str] = mapped_column(String(80), primary_key=True)
-    value: Mapped[str] = mapped_column(Text, default="")
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-class AdminAudit(Base):
-    __tablename__ = "admin_audit"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    action: Mapped[str] = mapped_column(String(160))
-    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
-
-Base.metadata.create_all(engine)
+# --- Admin control center ---
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
 ADMIN_SESSION_SECRET = os.getenv("ADMIN_SESSION_SECRET", "").strip()
 ADMIN_COOKIE = "quickdl_admin"
-
-DEFAULT_SETTINGS = {
-    "maintenance": "false",
-    "maintenance_message": "QuickDL is temporarily under maintenance. Please try again shortly.",
-    "announcement_enabled": "false",
-    "announcement": "",
-    "max_file_mb": str(MAX_FILE_MB),
-    "keep_file_hours": str(KEEP_FILE_HOURS),
-    "downloads_enabled": "true",
-    "youtube_enabled": "true",
-    "tiktok_enabled": "true",
-    "instagram_enabled": "true",
-    "facebook_enabled": "true",
-    "pinterest_enabled": "true",
-    "x_enabled": "true",
-    "snapchat_enabled": "true",
-    "web_enabled": "true",
-}
-
-def setting_get(key):
-    db = Session()
-    try:
-        row = db.get(AdminSetting, key)
-        return row.value if row else DEFAULT_SETTINGS.get(key, "")
-    finally:
-        db.close()
-
-def settings_all():
-    db = Session()
-    try:
-        vals = dict(DEFAULT_SETTINGS)
-        for row in db.scalars(select(AdminSetting)).all(): vals[row.key] = row.value
-        return vals
-    finally: db.close()
-
-def setting_bool(key):
-    return setting_get(key).lower() in {"1", "true", "yes", "on"}
-
-def audit(action, detail=""):
-    db = Session()
-    try:
-        db.add(AdminAudit(action=action, detail=detail[:1000]))
-        db.commit()
-    finally: db.close()
 
 def sign_admin(value):
     if not ADMIN_SESSION_SECRET: return ""
@@ -681,7 +606,7 @@ class AdminAction(BaseModel):
 @app.post("/api/admin/login")
 def admin_login(data: AdminLogin):
     if not ADMIN_PASSWORD or not ADMIN_SESSION_SECRET:
-        raise HTTPException(503, "Admin authentication is not configured. Set ADMIN_PASSWORD and ADMIN_SESSION_SECRET.")
+        raise HTTPException(503, "Admin authentication is not configured.")
     if not hmac.compare_digest(data.password, ADMIN_PASSWORD):
         audit("admin_login_failed", "Invalid password")
         raise HTTPException(401, "Invalid admin password")
@@ -704,7 +629,6 @@ def admin_overview(request: Request):
     require_admin(request)
     db = Session()
     try:
-        total = db.scalar(select(Download.id).count()) if False else None
         rows = db.scalars(select(Download)).all()
         now = datetime.now(timezone.utc)
         today = [r for r in rows if r.created_at and (now-r.created_at).total_seconds() < 86400]
@@ -715,7 +639,7 @@ def admin_overview(request: Request):
             status[r.status] = status.get(r.status, 0) + 1
             p = platform(r.url); plats[p] = plats.get(p, 0) + 1
         users = len({r.visitor_id for r in rows})
-        return {"version":"9.2.0-admin18", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
+        return {"version":"9.5.0-admin18", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
     finally: db.close()
 
 @app.get("/api/admin/users")
