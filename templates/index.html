@@ -9,40 +9,51 @@
   <link rel="stylesheet" href="/static/styles.css?v=9.3">
   <title>QuickDL — Media Downloader</title>
   <style>
-    :root {
-      --bg-color: #050b09;
-      --card-bg: rgba(18, 30, 25, 0.7);
-      --text-color: #ffffff;
-      --subtext-color: #94a3b8;
-      --border-color: rgba(255, 255, 255, 0.1);
-    }
-    
-    /* Full System Light Mode */
-    body.light-mode {
-      --bg-color: #f1f5f9 !important;
-      --card-bg: #ffffff !important;
-      --text-color: #0f172a !important;
-      --subtext-color: #475569 !important;
-      --border-color: #cbd5e1 !important;
-    }
-
+    /* Full System Light & Dark Mode Global Overrides */
     body {
-      background-color: var(--bg-color) !important;
-      color: var(--text-color) !important;
-      transition: background 0.3s ease, color 0.3s ease;
+      background-color: #050b09 !important;
+      color: #ffffff !important;
+      transition: background-color 0.3s ease, color 0.3s ease;
     }
 
-    /* Target all cards and boxes for Light Mode */
+    body.light-mode {
+      background-color: #f1f5f9 !important;
+      color: #0f172a !important;
+    }
+
+    /* Background Orbs and Glow adjustments for Light Mode */
+    body.light-mode .bg-orb,
+    body.light-mode .grid-glow {
+      opacity: 0.15;
+    }
+
+    /* Header / Topbar */
+    body.light-mode .topbar {
+      background-color: rgba(241, 245, 249, 0.85) !important;
+      border-bottom: 1px solid #cbd5e1 !important;
+    }
+
+    /* Cards, Containers, and Sections */
     body.light-mode .download-card,
     body.light-mode .how-grid article,
     body.light-mode .history-list > div,
     body.light-mode .favorite-grid > div,
     body.light-mode .footer,
-    body.light-mode .topbar {
-      background-color: var(--card-bg) !important;
-      color: var(--text-color) !important;
-      border-color: var(--border-color) !important;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+    body.light-mode .player-box {
+      background-color: #ffffff !important;
+      color: #0f172a !important;
+      border-color: #cbd5e1 !important;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08) !important;
+    }
+
+    /* Typography & Text colors in Light Mode */
+    body.light-mode h1, 
+    body.light-mode h2, 
+    body.light-mode h3, 
+    body.light-mode strong,
+    body.light-mode .hero h1,
+    body.light-mode .brand-copy strong {
+      color: #0f172a !important;
     }
 
     body.light-mode p, 
@@ -51,32 +62,26 @@
     body.light-mode .notice,
     body.light-mode .how-grid p,
     body.light-mode .footer-copy,
-    body.light-mode .footer-support {
-      color: var(--subtext-color) !important;
+    body.light-mode .footer-support span,
+    body.light-mode .footer-brand span {
+      color: #475569 !important;
     }
 
-    body.light-mode h1, 
-    body.light-mode h2, 
-    body.light-mode h3, 
-    body.light-mode strong,
-    body.light-mode .hero h1 {
-      color: var(--text-color) !important;
-    }
-
+    /* Inputs, Selects & Buttons */
     body.light-mode input, 
     body.light-mode select {
       background: #f8fafc !important;
       color: #0f172a !important;
-      border-color: var(--border-color) !important;
+      border-color: #cbd5e1 !important;
     }
 
     body.light-mode .platforms b {
       background: #e2e8f0 !important;
       color: #334155 !important;
-      border: 1px solid #cbd5e1;
+      border: 1px solid #cbd5e1 !important;
     }
 
-    /* Theme Toggle Button Style */
+    /* Theme Toggle Button */
     .theme-toggle-btn {
       background: rgba(255, 255, 255, 0.08);
       border: 1px solid rgba(255, 255, 255, 0.15);
@@ -134,6 +139,7 @@
     body.light-mode .social-btn {
       background: #e2e8f0;
       border-color: #cbd5e1;
+      color: #0f172a;
     }
     .social-btn:hover {
       background: #a855f7;
