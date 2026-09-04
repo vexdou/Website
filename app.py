@@ -69,9 +69,17 @@ UA = os.getenv(
     "DOWNLOADER_USER_AGENT",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36"
 )
-MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "500")) # Kordhiyay si uu u qaado video-yada dheer ee ilaa 20 min ah
+MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "500"))
 KEEP_FILE_HOURS = float(os.getenv("KEEP_FILE_HOURS", "6"))
-COOKIES_FILE = Path(os.getenv("YTDLP_COOKIES_FILE")) if os.getenv("YTDLP_COOKIES_FILE") else None
+
+# ---- AUTO-DETECT COOKIES.TXT ----
+_env_cookie = os.getenv("YTDLP_COOKIES_FILE")
+if _env_cookie and Path(_env_cookie).exists():
+    COOKIES_FILE = Path(_env_cookie)
+elif (BASE / "cookies.txt").exists():
+    COOKIES_FILE = BASE / "cookies.txt"
+else:
+    COOKIES_FILE = None
 
 DEFAULT_SETTINGS = {
     "maintenance": "false",
@@ -256,13 +264,13 @@ def human_error(exc):
     if "comfortable for some audiences" in low:
         return "TikTok restricted this post. Only accessible/public media can be downloaded."
     if "sign in" in low or "login required" in low or "authentication" in low:
-        return "This media requires sign-in or authorization."
+        return "This media requires sign-in or authorization. Please update cookies.txt."
     if "private" in low:
         return "This media is private or unavailable to the downloader."
     if "drm" in low:
         return "This media is DRM-protected and cannot be downloaded."
     if "429" in low or "too many requests" in low or "rate-limit" in low:
-        return "The source temporarily rate-listed this server. Please try again later."
+        return "YouTube/Instagram temporarily rate-limited this server. Please try again shortly."
     if "403" in low or "forbidden" in low:
         return "The source refused automated access to this media."
     if "unsupported url" in low or "no suitable extractor" in low:
@@ -287,7 +295,6 @@ def ytdlp_options(job, kind, youtube_player_client=None):
         "restrictfilenames": True,
         "windowsfilenames": True,
         "http_headers": {"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"},
-        # Optimiziiyey inuu si fiican u soo dejiyo labadaba Shorts iyo Videos dhaadheer (ilaa 20 min)
         "format": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b" if kind == "video" else "ba/b",
         "merge_output_format": "mp4" if kind == "video" else None,
         "max_filesize": int(setting_get("max_file_mb") or MAX_FILE_MB) * 1024 * 1024,
@@ -300,15 +307,6 @@ def ytdlp_options(job, kind, youtube_player_client=None):
     if kind == "audio":
         opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
     return {k: v for k, v in opts.items() if v is not None}
-
-def youtube_needs_fallback(exc):
-    text = str(exc).lower()
-    markers = (
-        "sign in to confirm", "requires sign-in", "requires sign in",
-        "login required", "authentication required", "confirm you're not a bot",
-        "this content isn't available", "http error 403", "forbidden"
-    )
-    return any(marker in text for marker in markers)
 
 def cleanup_job(job):
     for f in WORK.glob(f"{job}.*"):
@@ -433,7 +431,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="9.5.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="9.5.1", lifespan=lifespan)
 
 @app.get("/")
 def home():
@@ -459,7 +457,7 @@ def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "9.5.0"}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "9.5.1"}
     finally: db.close()
 
 class DownloadRequest(BaseModel):
@@ -639,7 +637,7 @@ def admin_overview(request: Request):
             status[r.status] = status.get(r.status, 0) + 1
             p = platform(r.url); plats[p] = plats.get(p, 0) + 1
         users = len({r.visitor_id for r in rows})
-        return {"version":"9.5.0-admin18", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
+        return {"version":"9.5.1-admin18", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
     finally: db.close()
 
 @app.get("/api/admin/users")
