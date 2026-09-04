@@ -1,4 +1,5 @@
 import os, re, time, uuid, mimetypes, logging, threading, ipaddress, socket
+import http.cookiejar
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -98,12 +99,31 @@ def allowed(url):
         return False
 
 
+def load_requests_cookies():
+    """Parse the Netscape-format cookies.txt (if configured) into a dict
+    that `requests` can use. Returns None if no cookies file is set/found.
+    This mirrors the same COOKIES_FILE already used for yt-dlp - it does not
+    add any new credential source, it just reuses the operator-provided file
+    for the plain `requests` calls in the Instagram OG-metadata fallback."""
+    if not COOKIES_FILE or not COOKIES_FILE.exists():
+        return None
+    try:
+        jar = http.cookiejar.MozillaCookieJar(str(COOKIES_FILE))
+        jar.load(ignore_discard=True, ignore_expires=True)
+        return {c.name: c.value for c in jar}
+    except Exception as exc:
+        log.warning("Failed to parse cookies file for requests: %s", exc)
+        return None
 
-def instagram_public_fallback(job, url, kind):
+
+def instagram_public_fallback(job, url, kind, max_retries=3):
     """Best-effort fallback for media that Instagram exposes publicly in OG metadata.
-    This never supplies credentials and never attempts to bypass a login/private post:
-    if a post needs a login, every URL below will also just return the login wall
-    (or nothing), same as the main extractor, and this simply returns None.
+    This never supplies credentials beyond an operator-provided cookies file and
+    never attempts to bypass a login/private post: if a post needs a login, every
+    URL below will also just return the login wall (or nothing), same as the main
+    extractor, and this simply returns None.
+    Retries on 429/403 with exponential backoff since Instagram frequently
+    throttles rather than permanently blocking a given request.
     """
     if kind != "video":
         return None
@@ -114,6 +134,7 @@ def instagram_public_fallback(job, url, kind):
         "Referer": "https://www.instagram.com/",
         "Cache-Control": "no-cache",
     }
+    cookies = load_requests_cookies()
     # Instagram's own embed page is meant for third-party sites to render a
     # public post and is more likely to include a server-rendered <video>/OG
     # tag than the main post page, which increasingly leaves a plain,
@@ -126,11 +147,33 @@ def instagram_public_fallback(job, url, kind):
     try:
         html = None
         for candidate in candidates:
-            try:
-                r = requests.get(candidate, headers=headers, timeout=(15, 30), allow_redirects=True)
-                r.raise_for_status()
-            except Exception as exc:
-                log.info("job=%s: Instagram public fetch of %s unavailable: %s", job, candidate, exc)
+            r = None
+            for attempt in range(max_retries):
+                try:
+                    r = requests.get(candidate, headers=headers, cookies=cookies,
+                                      timeout=(15, 30), allow_redirects=True)
+                    if r.status_code in (429, 403) and attempt < max_retries - 1:
+                        wait = (2 ** attempt) + 0.5  # 1.5s, 2.5s, 4.5s...
+                        log.info("job=%s: Instagram returned %s on %s, retrying in %.1fs (attempt %d/%d)",
+                                  job, r.status_code, candidate, wait, attempt + 1, max_retries)
+                        time.sleep(wait)
+                        continue
+                    r.raise_for_status()
+                    break
+                except requests.HTTPError as exc:
+                    status = getattr(exc.response, "status_code", None)
+                    if attempt < max_retries - 1 and status in (429, 403):
+                        wait = (2 ** attempt) + 0.5
+                        time.sleep(wait)
+                        continue
+                    log.info("job=%s: Instagram public fetch of %s failed: %s", job, candidate, exc)
+                    r = None
+                    break
+                except Exception as exc:
+                    log.info("job=%s: Instagram public fetch of %s unavailable: %s", job, candidate, exc)
+                    r = None
+                    break
+            if r is None:
                 continue
             html = r.text
             if "og:video" in html or "video_url" in html:
@@ -152,17 +195,35 @@ def instagram_public_fallback(job, url, kind):
         if not media_url or not media_url.startswith(('http://', 'https://')):
             return None
         out = WORK / f"{job}.mp4"
-        with requests.get(media_url, headers={"User-Agent": UA, "Referer": "https://www.instagram.com/"}, stream=True, timeout=(15, 60), allow_redirects=True) as mr:
-            mr.raise_for_status()
-            total = 0
-            with open(out, 'wb') as fh:
-                for chunk in mr.iter_content(chunk_size=1024 * 256):
-                    if not chunk:
+        total = 0
+        for attempt in range(max_retries):
+            try:
+                with requests.get(media_url, headers={"User-Agent": UA, "Referer": "https://www.instagram.com/"},
+                                   cookies=cookies, stream=True, timeout=(15, 60), allow_redirects=True) as mr:
+                    if mr.status_code in (429, 403) and attempt < max_retries - 1:
+                        wait = (2 ** attempt) + 0.5
+                        log.info("job=%s: Instagram media fetch got %s, retrying in %.1fs (attempt %d/%d)",
+                                  job, mr.status_code, wait, attempt + 1, max_retries)
+                        time.sleep(wait)
                         continue
-                    total += len(chunk)
-                    if total > int(setting_get("max_file_mb") or MAX_FILE_MB) * 1024 * 1024:
-                        raise RuntimeError("Instagram media exceeds the configured file size limit")
-                    fh.write(chunk)
+                    mr.raise_for_status()
+                    total = 0
+                    with open(out, 'wb') as fh:
+                        for chunk in mr.iter_content(chunk_size=1024 * 256):
+                            if not chunk:
+                                continue
+                            total += len(chunk)
+                            if total > int(setting_get("max_file_mb") or MAX_FILE_MB) * 1024 * 1024:
+                                raise RuntimeError("Instagram media exceeds the configured file size limit")
+                            fh.write(chunk)
+                    break
+            except requests.HTTPError as exc:
+                status = getattr(exc.response, "status_code", None)
+                if attempt < max_retries - 1 and status in (429, 403):
+                    wait = (2 ** attempt) + 0.5
+                    time.sleep(wait)
+                    continue
+                raise
         if total < 1:
             out.unlink(missing_ok=True)
             return None
