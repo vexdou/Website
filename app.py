@@ -712,7 +712,7 @@ def admin_action(data: AdminAction, request: Request):
         else: rows=db.scalars(select(Download)).all()
         for r in rows: cleanup_job(r.job_id)
         if data.action=="clear_failed": db.execute(delete(Download).where(Download.status=="failed"))
-        elif data.action=="clear_completed": db.execute(delete(Download].where(Download.status=="completed"))
+        elif data.action=="clear_completed": db.execute(delete(Download).where(Download.status=="completed"))
         else: db.execute(delete(Download))
         db.commit(); audit("admin_action",data.action); return {"ok":True,"removed":len(rows)}
     finally: db.close()
