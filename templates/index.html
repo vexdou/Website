@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+
+  <meta
+    name="viewport"
+    content="width=device-width,initial-scale=1,viewport-fit=cover"
+  >
 
   <meta
     name="theme-color"
@@ -14,24 +18,32 @@
     content="QuickDL — fast, simple media downloader"
   >
 
-  <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/static/styles.css?v=9.4">
+  <link
+    rel="manifest"
+    href="/manifest.json"
+  >
+
+  <link
+    rel="stylesheet"
+    href="/static/styles.css?v=9.4"
+  >
 
   <title>QuickDL — Media Downloader</title>
 </head>
 
 <body>
 
-  <!-- Background -->
   <div class="bg-orb orb-1"></div>
   <div class="bg-orb orb-2"></div>
   <div class="grid-glow"></div>
 
 
-  <!-- =========================
-       HEADER
-  ========================== -->
+  <!-- ================================
+       TOP NAVIGATION
+       ================================ -->
+
   <header class="topbar">
+
     <div class="nav-shell">
 
       <button
@@ -53,6 +65,7 @@
         class="nav-tabs"
         aria-label="Main navigation"
       >
+
         <button
           class="nav-tab active"
           data-view="home"
@@ -76,34 +89,38 @@
         >
           Favorites
         </button>
+
       </nav>
 
     </div>
+
   </header>
 
 
-  <!-- =========================
-       MAIN
-  ========================== -->
+  <!-- ================================
+       MAIN CONTENT
+       ================================ -->
+
   <main class="page-shell">
 
 
-    <!-- =========================
-         HOME VIEW
-    ========================== -->
+    <!-- ================================
+         HOME
+         ================================ -->
+
     <section
       id="homeView"
       class="view"
     >
 
-      <!-- Announcement -->
       <div
         id="announcement"
         class="public-announcement hidden"
       ></div>
 
 
-      <!-- Hero -->
+      <!-- HERO -->
+
       <div class="hero">
 
         <div class="pill">
@@ -111,23 +128,28 @@
           FAST • CLEAN • EASY
         </div>
 
+
         <h1>
           Download media.<br>
           <em>Keep it.</em>
         </h1>
 
+
+        <!-- BEAUTIFIED SUBTITLE -->
+
         <p>
-          Paste a video or media link.
-          QuickDL prepares it for preview
-          and saving on your device.
+          One simple place to download your favorite media.
+          <br>
+          <span>
+            Fast processing. Clean experience. Easy saving.
+          </span>
         </p>
 
       </div>
 
 
-      <!-- =========================
-           DOWNLOAD CARD
-      ========================== -->
+      <!-- DOWNLOAD CARD -->
+
       <section class="download-card">
 
         <div class="card-topline">
@@ -144,7 +166,8 @@
         </div>
 
 
-        <!-- URL -->
+        <!-- URL INPUT -->
+
         <label class="url-field">
 
           <span class="url-icon">
@@ -171,7 +194,8 @@
         </label>
 
 
-        <!-- Controls -->
+        <!-- DOWNLOAD CONTROLS -->
+
         <div class="download-controls">
 
           <label class="type-select">
@@ -206,8 +230,15 @@
             </span>
 
             <span>
-              <b>Download</b>
-              <small>Start download</small>
+
+              <b>
+                Download
+              </b>
+
+              <small>
+                Start download
+              </small>
+
             </span>
 
           </button>
@@ -215,24 +246,43 @@
         </div>
 
 
-        <!-- Platforms -->
+        <!-- SUPPORTED PLATFORMS -->
+
         <div class="platforms">
 
           <span>
             Works with
           </span>
 
-          <b>YouTube</b>
-          <b>TikTok</b>
-          <b>Instagram</b>
-          <b>Facebook</b>
-          <b>Pinterest</b>
-          <b>X</b>
+          <b>
+            YouTube
+          </b>
+
+          <b>
+            TikTok
+          </b>
+
+          <b>
+            Instagram
+          </b>
+
+          <b>
+            Facebook
+          </b>
+
+          <b>
+            Pinterest
+          </b>
+
+          <b>
+            X
+          </b>
 
         </div>
 
 
-        <!-- Status -->
+        <!-- STATUS -->
+
         <div
           id="status"
           class="status hidden"
@@ -265,16 +315,21 @@
 
 
           <div class="progress-track">
+
             <i id="bar"></i>
+
           </div>
 
         </div>
 
 
-        <!-- Notice -->
+        <!-- NOTICE -->
+
         <p class="notice">
 
-          <span>i</span>
+          <span>
+            i
+          </span>
 
           Public and otherwise accessible media is supported.
           A source can still block automated access,
@@ -285,14 +340,15 @@
       </section>
 
 
-      <!-- =========================
-           HOW IT WORKS
-      ========================== -->
+      <!-- HOW IT WORKS -->
+
       <section class="how-grid">
 
         <article>
 
-          <span>01</span>
+          <span>
+            01
+          </span>
 
           <div>
 
@@ -311,7 +367,9 @@
 
         <article>
 
-          <span>02</span>
+          <span>
+            02
+          </span>
 
           <div>
 
@@ -330,7 +388,9 @@
 
         <article>
 
-          <span>03</span>
+          <span>
+            03
+          </span>
 
           <div>
 
@@ -351,10 +411,10 @@
     </section>
 
 
+    <!-- ================================
+         HISTORY
+         ================================ -->
 
-    <!-- =========================
-         HISTORY VIEW
-    ========================== -->
     <section
       id="historyView"
       class="view hidden"
@@ -398,10 +458,10 @@
     </section>
 
 
+    <!-- ================================
+         FAVORITES
+         ================================ -->
 
-    <!-- =========================
-         FAVORITES VIEW
-    ========================== -->
     <section
       id="favoritesView"
       class="view hidden"
@@ -438,16 +498,17 @@
   </main>
 
 
+  <!-- ================================
+       PREMIUM COMPACT FOOTER
+       ================================ -->
 
-  <!-- =========================
-       COMPACT PREMIUM FOOTER
-  ========================== -->
   <footer class="footer">
 
     <div class="footer-ad">
 
 
-      <!-- Brand -->
+      <!-- BRAND -->
+
       <div class="footer-brand">
 
         <div class="footer-logo">
@@ -469,7 +530,8 @@
       </div>
 
 
-      <!-- Badge -->
+      <!-- STATUS / PROMO BADGE -->
+
       <div class="footer-badge">
 
         <span class="footer-badge-dot"></span>
@@ -479,17 +541,23 @@
       </div>
 
 
-      <!-- Tagline -->
+      <!-- TAGLINE -->
+
       <p class="footer-tagline">
-        Download media simply. Save it anywhere.
+
+        Download media simply.
+        Save it anywhere.
+
       </p>
 
 
-      <!-- Bottom -->
+      <!-- FOOTER LINKS -->
+
       <div class="footer-bottom">
 
 
-        <!-- Support -->
+        <!-- SUPPORT -->
+
         <a
           class="footer-support"
           href="mailto:costumer@quickdl.site"
@@ -504,7 +572,8 @@
         </a>
 
 
-        <!-- TikTok ONLY -->
+        <!-- TIKTOK LOGO ONLY -->
+
         <a
           class="footer-tiktok"
           href="https://www.tiktok.com/@vexdou"
@@ -529,7 +598,8 @@
         </a>
 
 
-        <!-- Copyright -->
+        <!-- COPYRIGHT -->
+
         <span class="footer-copy">
           © 2026 QuickDL
         </span>
@@ -541,10 +611,10 @@
   </footer>
 
 
-
-  <!-- =========================
+  <!-- ================================
        TOAST
-  ========================== -->
+       ================================ -->
+
   <div
     id="toast"
     class="toast"
@@ -553,10 +623,10 @@
   ></div>
 
 
+  <!-- ================================
+       MEDIA PLAYER MODAL
+       ================================ -->
 
-  <!-- =========================
-       PLAYER MODAL
-  ========================== -->
   <div
     id="player"
     class="modal hidden"
@@ -566,7 +636,6 @@
     <div class="player-box">
 
 
-      <!-- Close -->
       <button
         id="closePlayer"
         class="player-close"
@@ -577,7 +646,6 @@
       </button>
 
 
-      <!-- Header -->
       <div class="player-header">
 
         <span class="player-kicker">
@@ -591,7 +659,6 @@
       </div>
 
 
-      <!-- Player -->
       <div class="player-stage">
 
         <video
@@ -609,7 +676,6 @@
       </div>
 
 
-      <!-- Save -->
       <a
         id="saveBtn"
         class="save-btn"
@@ -629,10 +695,8 @@
   </div>
 
 
+  <!-- APP JAVASCRIPT -->
 
-  <!-- =========================
-       APP JS
-  ========================== -->
   <script src="/static/app.js?v=9.4"></script>
 
 </body>
