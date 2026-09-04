@@ -1,718 +1,247 @@
-import os, re, time, uuid, mimetypes, logging, threading, ipaddress, socket
-import http.cookiejar
-from datetime import datetime, timezone
+import os, re, uuid, time, threading, logging, mimetypes
 from pathlib import Path
 from urllib.parse import urlparse
+from datetime import datetime, timezone
+import http.cookiejar
 
 import yt_dlp
-import requests
-from html import unescape
-from fastapi import FastAPI, HTTPException, Cookie, Request
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, HttpUrl
-from sqlalchemy import create_engine, String, Text, Integer, DateTime, select, update, delete
+from sqlalchemy import create_engine, String, Text, Integer, DateTime, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
-from contextlib import asynccontextmanager
-import hashlib, hmac, base64, json
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-log = logging.getLogger("quickdl")
-BASE = Path(__file__).resolve().parent
-WORK = Path(os.getenv("WORK_DIR", "/tmp/quickdl"))
-WORK.mkdir(parents=True, exist_ok=True)
+log=logging.getLogger("quickdl")
 
-DB_URL = os.getenv("DATABASE_URL", "").strip()
-if not DB_URL:
-    raise RuntimeError("DATABASE_URL is required")
-if DB_URL.startswith("postgres://"):
-    DB_URL = DB_URL.replace("postgres://", "postgresql+psycopg2://", 1)
-elif DB_URL.startswith("postgresql://"):
-    DB_URL = DB_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
+BASE=Path(__file__).resolve().parent
+WORK=Path(os.getenv("WORK_DIR","/tmp/quickdl"))
+WORK.mkdir(parents=True,exist_ok=True)
+MAX_FILE_MB=max(1,int(os.getenv("MAX_FILE_MB","100")))
+KEEP_FILE_HOURS=float(os.getenv("KEEP_FILE_HOURS","6"))
+UA=os.getenv("DOWNLOADER_USER_AGENT","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36")
 
-engine = create_engine(DB_URL, pool_pre_ping=True, pool_recycle=300, pool_size=3, max_overflow=2)
-Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+db_url=os.getenv("DATABASE_URL","").strip()
+if db_url.startswith("postgres://"): db_url=db_url.replace("postgres://","postgresql+psycopg2://",1)
+elif db_url.startswith("postgresql://"): db_url=db_url.replace("postgresql://","postgresql+psycopg2://",1)
+if not db_url: db_url=f"sqlite:///{WORK/'quickdl.db'}"
+engine=create_engine(db_url,pool_pre_ping=True)
+Session=sessionmaker(bind=engine,autoflush=False,autocommit=False)
 
-class Base(DeclarativeBase):
-    pass
-
+class Base(DeclarativeBase): pass
 class Download(Base):
-    __tablename__ = "downloads"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    job_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    visitor_id: Mapped[str] = mapped_column(String(128), index=True)
-    url: Mapped[str] = mapped_column(Text)
-    title: Mapped[str] = mapped_column(Text, default="Media")
-    thumbnail: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(30), default="queued", index=True)
-    kind: Mapped[str] = mapped_column(String(20), default="video")
-    filename: Mapped[str | None] = mapped_column(Text, nullable=True)
-    content_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-class AdminSetting(Base):
-    __tablename__ = "admin_settings"
-    key: Mapped[str] = mapped_column(String(80), primary_key=True)
-    value: Mapped[str] = mapped_column(Text, default="")
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-class AdminAudit(Base):
-    __tablename__ = "admin_audit"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    action: Mapped[str] = mapped_column(String(160))
-    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
-
+    __tablename__="downloads"
+    id:Mapped[int]=mapped_column(Integer,primary_key=True)
+    job_id:Mapped[str]=mapped_column(String(64),unique=True,index=True)
+    visitor_id:Mapped[str]=mapped_column(String(128),index=True)
+    url:Mapped[str]=mapped_column(Text)
+    title:Mapped[str]=mapped_column(Text,default="Media")
+    thumbnail:Mapped[str|None]=mapped_column(Text,nullable=True)
+    status:Mapped[str]=mapped_column(String(30),default="queued",index=True)
+    kind:Mapped[str]=mapped_column(String(20),default="video")
+    filename:Mapped[str|None]=mapped_column(Text,nullable=True)
+    content_type:Mapped[str|None]=mapped_column(String(120),nullable=True)
+    error:Mapped[str|None]=mapped_column(Text,nullable=True)
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
 Base.metadata.create_all(engine)
 
-UA = os.getenv(
-    "DOWNLOADER_USER_AGENT",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36"
-)
-MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "500"))
-KEEP_FILE_HOURS = float(os.getenv("KEEP_FILE_HOURS", "6"))
-
-# ---- ROBUST COOKIES SETUP FROM ENV OR FILE ----
-COOKIES_FILE = WORK / "cookies.txt"
-cookie_content = os.getenv("COOKIES_CONTENT", "").strip()
-if cookie_content:
-    try:
-        COOKIES_FILE.write_text(cookie_content)
-        log.info("Cookies successfully written from COOKIES_CONTENT env var.")
-    except Exception as e:
-        log.error("Failed to write cookies from env: %s", e)
-elif (BASE / "cookies.txt").exists():
-    COOKIES_FILE = BASE / "cookies.txt"
-else:
-    COOKIES_FILE = None
-
-DEFAULT_SETTINGS = {
-    "maintenance": "false",
-    "maintenance_message": "QuickDL is temporarily under maintenance. Please try again shortly.",
-    "announcement_enabled": "false",
-    "announcement": "",
-    "max_file_mb": str(MAX_FILE_MB),
-    "keep_file_hours": str(KEEP_FILE_HOURS),
-    "downloads_enabled": "true",
-    "youtube_enabled": "true",
-    "tiktok_enabled": "true",
-    "instagram_enabled": "true",
-    "facebook_enabled": "true",
-    "pinterest_enabled": "true",
-    "x_enabled": "true",
-    "snapchat_enabled": "true",
-    "web_enabled": "true",
-}
-
-def setting_get(key):
-    db = Session()
-    try:
-        row = db.get(AdminSetting, key)
-        return row.value if row else DEFAULT_SETTINGS.get(key, "")
-    finally:
-        db.close()
-
-def settings_all():
-    db = Session()
-    try:
-        vals = dict(DEFAULT_SETTINGS)
-        for row in db.scalars(select(AdminSetting)).all(): vals[row.key] = row.value
-        return vals
-    finally: db.close()
-
-def setting_bool(key):
-    return setting_get(key).lower() in {"1", "true", "yes", "on"}
-
-def audit(action, detail=""):
-    db = Session()
-    try:
-        db.add(AdminAudit(action=action, detail=detail[:1000]))
-        db.commit()
-    finally: db.close()
-
-def hostname(url):
-    return (urlparse(url).hostname or "").lower().rstrip(".")
+def cookie_file():
+    # Preferred: Render Secret File mounted at /etc/secrets/cookies.txt.
+    configured=os.getenv("YTDLP_COOKIES_FILE","").strip()
+    candidates=[configured, "/etc/secrets/cookies.txt", str(BASE/"cookies.txt")]
+    for p in candidates:
+        if p and Path(p).is_file() and Path(p).stat().st_size>0:
+            return Path(p)
+    # Optional emergency/alternative: put the Netscape cookie text in an env var.
+    content=os.getenv("COOKIES_CONTENT","")
+    if content.strip():
+        p=WORK/"cookies.txt"
+        p.write_text(content,encoding="utf-8")
+        return p
+    return None
 
 def platform(url):
-    h = hostname(url)
-    if "youtube" in h or h == "youtu.be": return "youtube"
-    if "tiktok" in h: return "tiktok"
-    if "instagram" in h or h == "instagr.am": return "instagram"
-    if "facebook" in h or h in {"fb.watch", "fb.me"}: return "facebook"
-    if "pinterest" in h or h == "pin.it": return "pinterest"
-    if h in {"x.com", "twitter.com"}: return "x"
-    if "snapchat" in h: return "snapchat"
+    h=(urlparse(url).hostname or "").lower().rstrip(".")
+    if h=="youtu.be" or "youtube." in h: return "youtube"
+    if "instagram." in h or h=="instagr.am": return "instagram"
+    if "tiktok." in h: return "tiktok"
+    if "facebook." in h or h in {"fb.watch","fb.me"}: return "facebook"
+    if "pinterest." in h or h=="pin.it": return "pinterest"
+    if h in {"x.com","twitter.com"}: return "x"
     return "web"
 
-def public_host(h):
-    if not h or h in {"localhost", "localhost.localdomain"} or h.endswith((".local", ".internal", ".localhost")):
-        return False
-    try:
-        infos = socket.getaddrinfo(h, None, type=socket.SOCK_STREAM)
-        return bool(infos) and all(
-            not (a := ipaddress.ip_address(i[4][0])).is_private
-            and not a.is_loopback and not a.is_link_local and not a.is_multicast
-            and not a.is_reserved and not a.is_unspecified
-            for i in infos
-        )
-    except Exception:
-        return True
+def valid_url(url):
+    p=urlparse(url)
+    return p.scheme in {"http","https"} and bool(p.hostname)
 
-def allowed(url):
-    try:
-        p = urlparse(url)
-        return p.scheme in {"http", "https"} and bool(p.hostname) and public_host(hostname(url))
-    except Exception:
-        return False
-
-def load_requests_cookies():
-    if not COOKIES_FILE or not COOKIES_FILE.exists():
-        return None
-    try:
-        jar = http.cookiejar.MozillaCookieJar(str(COOKIES_FILE))
-        jar.load(ignore_discard=True, ignore_expires=True)
-        return {c.name: c.value for c in jar}
-    except Exception as exc:
-        log.warning("Failed to parse cookies file for requests: %s", exc)
-        return None
-
-def instagram_public_fallback(job, url, kind, max_retries=3):
-    if kind != "video":
-        return None
-    headers = {
-        "User-Agent": UA,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.instagram.com/",
-        "Cache-Control": "no-cache",
+def options(job,kind,client=None):
+    opts={
+        "outtmpl":str(WORK/f"{job}.%(ext)s"),
+        "noplaylist":True,
+        "quiet":True,
+        "no_warnings":False,
+        "retries":5,
+        "fragment_retries":5,
+        "file_access_retries":3,
+        "socket_timeout":60,
+        "concurrent_fragment_downloads":2,
+        "http_headers":{"User-Agent":UA,"Accept-Language":"en-US,en;q=0.9"},
+        "restrictfilenames":True,
+        "windowsfilenames":True,
+        "max_filesize":MAX_FILE_MB*1024*1024,
+        "format":"bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b" if kind=="video" else "ba/b",
+        "merge_output_format":"mp4" if kind=="video" else None,
     }
-    cookies = load_requests_cookies()
-    candidates = [url]
-    shortcode_m = re.search(r"/(p|reel|tv)/([^/?#]+)", urlparse(url).path)
-    if shortcode_m:
-        candidates.insert(0, f"https://www.instagram.com/{shortcode_m.group(1)}/{shortcode_m.group(2)}/embed/captioned/")
-    try:
-        html = None
-        for candidate in candidates:
-            r = None
-            for attempt in range(max_retries):
-                try:
-                    r = requests.get(candidate, headers=headers, cookies=cookies,
-                                      timeout=(15, 30), allow_redirects=True)
-                    if r.status_code in (429, 403) and attempt < max_retries - 1:
-                        wait = (2 ** attempt) + 0.5
-                        time.sleep(wait)
-                        continue
-                    r.raise_for_status()
-                    break
-                except Exception:
-                    r = None
-                    break
-            if r is None:
-                continue
-            html = r.text
-            if "og:video" in html or "video_url" in html:
-                break
-        if not html:
-            return None
-        patterns = [
-            r'<meta[^>]+property=["\']og:video(?::secure_url)?["\'][^>]+content=["\']([^"\']+)',
-            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:video(?::secure_url)?["\']',
-            r'"video_url"\s*:\s*"([^"]+)"',
-        ]
-        media_url = None
-        for pat in patterns:
-            m = re.search(pat, html, re.I)
-            if m:
-                media_url = unescape(m.group(1)).replace('\\/', '/').replace('&amp;', '&')
-                break
-        if not media_url or not media_url.startswith(('http://', 'https://')):
-            return None
-        out = WORK / f"{job}.mp4"
-        total = 0
-        for attempt in range(max_retries):
-            try:
-                with requests.get(media_url, headers={"User-Agent": UA, "Referer": "https://www.instagram.com/"},
-                                   cookies=cookies, stream=True, timeout=(15, 60), allow_redirects=True) as mr:
-                    if mr.status_code in (429, 403) and attempt < max_retries - 1:
-                        time.sleep((2 ** attempt) + 0.5)
-                        continue
-                    mr.raise_for_status()
-                    total = 0
-                    with open(out, 'wb') as fh:
-                        for chunk in mr.iter_content(chunk_size=1024 * 256):
-                            if not chunk:
-                                continue
-                            total += len(chunk)
-                            if total > int(setting_get("max_file_mb") or MAX_FILE_MB) * 1024 * 1024:
-                                raise RuntimeError("Instagram media exceeds the configured file size limit")
-                            fh.write(chunk)
-                    break
-            except Exception:
-                if attempt == max_retries - 1:
-                    raise
-        if total < 1:
-            out.unlink(missing_ok=True)
-            return None
-        title_m = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', html, re.I)
-        title = unescape(title_m.group(1)).strip()[:180] if title_m else "Instagram Media"
-        image_m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', html, re.I)
-        thumbnail = unescape(image_m.group(1)).replace('&amp;', '&') if image_m else None
-        return {"title": title, "thumbnail": thumbnail}
-    except Exception as exc:
-        log.info("job=%s: Instagram public metadata fallback unavailable: %s", job, exc)
-        return None
+    # Only use cookies if an explicit, readable file exists.
+    cf=cookie_file()
+    if cf: opts["cookiefile"]=str(cf)
+    if client: opts["extractor_args"]={"youtube":{"player_client":[client]}}
+    if kind=="audio":
+        opts["postprocessors"]=[{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":"192"}]
+    return {k:v for k,v in opts.items() if v is not None}
 
-def human_error(exc):
-    text = re.sub(r"\s+", " ", str(exc)).strip()
-    low = text.lower()
-    if "comfortable for some audiences" in low:
-        return "TikTok restricted this post. Only accessible/public media can be downloaded."
-    if "sign in" in low or "login required" in low or "authentication" in low:
-        return "This media requires sign-in or authorization. Please update cookies.txt."
-    if "private" in low:
-        return "This media is private or unavailable to the downloader."
-    if "drm" in low:
-        return "This media is DRM-protected and cannot be downloaded."
-    if "429" in low or "too many requests" in low or "rate-limit" in low:
-        return "YouTube/Instagram temporarily rate-limited this server. Please try again shortly."
-    if "403" in low or "forbidden" in low:
-        return "The source refused automated access to this media."
-    if "unsupported url" in low or "no suitable extractor" in low:
-        return "This URL is not supported by the media extractor."
-    if "timed out" in low or "timeout" in low:
-        return "The source took too long to respond. Please try again."
-    return text[:700] or "Download failed. Please try another media URL."
-
-def ytdlp_options(job, kind, youtube_player_client=None):
-    out = str(WORK / f"{job}.%(ext)s")
-    opts = {
-        "outtmpl": out,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "retries": 5,
-        "fragment_retries": 5,
-        "file_access_retries": 3,
-        "socket_timeout": 60,
-        "concurrent_fragment_downloads": 2,
-        "skip_unavailable_fragments": True,
-        "restrictfilenames": True,
-        "windowsfilenames": True,
-        "http_headers": {"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"},
-        "format": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b" if kind == "video" else "ba/b",
-        "merge_output_format": "mp4" if kind == "video" else None,
-        "max_filesize": int(setting_get("max_file_mb") or MAX_FILE_MB) * 1024 * 1024,
-        "js_runtimes": {"deno": {}, "node": {}, "quickjs": {}},
-    }
-    if COOKIES_FILE and COOKIES_FILE.exists():
-        opts["cookiefile"] = str(COOKIES_FILE)
-    if youtube_player_client:
-        opts["extractor_args"] = {"youtube": {"player_client": [youtube_player_client]}}
-    if kind == "audio":
-        opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
-    return {k: v for k, v in opts.items() if v is not None}
-
-def cleanup_job(job):
+def cleanup(job):
     for f in WORK.glob(f"{job}.*"):
-        try: f.unlink()
-        except OSError: pass
+        try:f.unlink()
+        except OSError:pass
 
-def mark_failed(job, error):
-    db = Session()
-    try:
-        db.execute(update(Download).where(Download.job_id == job).values(status="failed", error=human_error(error)))
-        db.commit()
-    finally:
-        db.close()
+def friendly_error(exc):
+    s=re.sub(r"\s+"," ",str(exc)).strip()
+    l=s.lower()
+    if "sign in" in l or "login required" in l or "authentication" in l:
+        return "The source requires authorization. Configure a valid cookies.txt as a Render Secret File and set YTDLP_COOKIES_FILE=/etc/secrets/cookies.txt."
+    if "429" in l or "too many requests" in l:
+        return "The source rate-limited this server. Please try again later."
+    if "403" in l or "forbidden" in l:
+        return "The source refused automated access to this media."
+    if "private" in l: return "This media is private or unavailable."
+    if "unsupported url" in l or "no suitable extractor" in l: return "This URL is not supported."
+    if "ffmpeg" in l: return "FFmpeg is required for this format and is not available."
+    if "timed out" in l or "timeout" in l: return "The source took too long to respond."
+    return s[:700] or "Download failed."
 
-def process(job, kind):
-    cleanup_job(job)
-    db = Session()
-    try:
-        row = db.scalar(select(Download).where(Download.job_id == job))
-        if not row: return
-        url = row.url
-    finally:
-        db.close()
-    try:
-        client_chain = [None, "tv", "android", "web_embedded"]
-        if platform(url) == "youtube":
-            attempts = [ytdlp_options(job, kind, youtube_player_client=c) for c in client_chain]
-        else:
-            attempts = [ytdlp_options(job, kind)]
-
-        last_exc = None
-        info = None
-        for attempt_no, opts in enumerate(attempts):
-            try:
-                cleanup_job(job)
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                break
-            except Exception as exc:
-                last_exc = exc
-                is_last_attempt = attempt_no == len(attempts) - 1
-                if platform(url) == "youtube" and not is_last_attempt:
-                    log.warning("job=%s: YouTube client %r failed; trying next client", job, client_chain[attempt_no])
-                    continue
-                if platform(url) == "instagram":
-                    cleanup_job(job)
-                    fallback_info = instagram_public_fallback(job, url, kind)
-                    if fallback_info:
-                        info = fallback_info
-                        log.info("job=%s: Instagram public OG fallback succeeded", job)
-                        break
-                raise
-        if info is None:
-            raise last_exc or RuntimeError("No media information was returned")
-
-        files = [f for f in WORK.glob(f"{job}.*") if f.is_file() and f.suffix not in {".part", ".ytdl"}]
-        if not files: raise RuntimeError("No media file was created")
-        media = max(files, key=lambda f: f.stat().st_size)
-        if media.stat().st_size < 1: raise RuntimeError("Downloaded file is empty")
-        ctype = mimetypes.guess_type(media.name)[0] or ("audio/mpeg" if kind == "audio" else "video/mp4")
-        title = re.sub(r"\s+", " ", info.get("title") or "Media").strip()[:180]
-        db = Session()
-        try:
-            db.execute(update(Download).where(Download.job_id == job).values(
-                title=title, thumbnail=info.get("thumbnail"), filename=media.name,
-                content_type=ctype, status="completed", error=None
-            ))
-            db.commit()
-        finally:
-            db.close()
-    except Exception as exc:
-        log.exception("job=%s failed", job)
-        mark_failed(job, exc)
-        cleanup_job(job)
-
-def claim_one():
-    db = Session()
-    try:
-        row = db.scalar(select(Download).where(Download.status == "queued").order_by(Download.id).limit(1))
-        if not row: return None
-        result = db.execute(update(Download).where(
-            Download.job_id == row.job_id, Download.status == "queued"
-        ).values(status="downloading", error=None))
-        if result.rowcount != 1:
-            db.rollback(); return None
-        db.commit()
-        return row.job_id, row.kind
-    finally:
-        db.close()
-
-def recover_stuck():
-    db = Session()
-    try:
-        db.execute(update(Download).where(Download.status == "downloading").values(status="queued", error=None))
-        db.commit()
-    finally:
-        db.close()
-
-def cleanup_old():
-    cutoff = time.time() - float(setting_get("keep_file_hours") or KEEP_FILE_HOURS) * 3600
-    for f in WORK.iterdir():
-        if not f.is_file() or f.suffix in {".part", ".ytdl"}: continue
-        try:
-            if f.stat().st_mtime < cutoff: f.unlink()
-        except OSError: pass
-
-def worker_loop():
-    recover_stuck()
-    last = 0
-    while True:
-        try:
-            if time.time() - last > 600:
-                cleanup_old(); last = time.time()
-            item = claim_one()
-            if item: process(*item)
-            else: time.sleep(float(os.getenv("WORKER_POLL_SECONDS", "0.7")))
-        except Exception:
-            log.exception("worker error"); time.sleep(2)
-
-@asynccontextmanager
-async def lifespan(app):
-    threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
-    yield
-
-app = FastAPI(title="QuickDL", version="9.5.2", lifespan=lifespan)
-
-@app.get("/")
-def home():
-    if setting_bool("maintenance"):
-        return FileResponse(BASE / "templates" / "maintenance.html")
-    return FileResponse(BASE / "templates" / "index.html")
-
-@app.get("/static/{path:path}")
-def static_file(path: str): return FileResponse(BASE / "static" / path)
-
-@app.get("/manifest.json")
-def manifest(): return FileResponse(BASE / "manifest.json", media_type="application/manifest+json")
-
-@app.get("/sw.js")
-def sw(): return FileResponse(BASE / "sw.js", media_type="application/javascript", headers={"Cache-Control":"no-cache"})
-
-@app.get("/api/public-config")
-def public_config():
-    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance")}
-
-@app.get("/api/health")
-def health():
-    db = Session()
-    try:
-        db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "9.5.2"}
-    finally: db.close()
-
-class DownloadRequest(BaseModel):
-    url: HttpUrl
-    kind: str = "video"
-
-def serialize(row):
-    f = WORK / row.filename if row.filename else None
-    ready = row.status == "completed" and f is not None and f.exists()
-    status = "completed" if ready else ("expired" if row.status == "completed" else row.status)
-    return {
-        "job_id": row.job_id, "title": row.title, "status": status, "kind": row.kind,
-        "thumbnail": row.thumbnail, "url": row.url, "platform": platform(row.url),
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "download_url": f"/api/file/{row.job_id}" if ready else None,
-        "preview_url": f"/api/file/{row.job_id}" if ready else None,
-        "content_type": row.content_type,
-        "error": row.error if status != "expired" else "This file is no longer stored on the server."
-    }
-
-@app.post("/api/download")
-def create_download(req: DownloadRequest, vexdou_visitor: str | None = Cookie(default=None)):
-    if setting_bool("maintenance"):
-        raise HTTPException(503, setting_get("maintenance_message"))
-    if not setting_bool("downloads_enabled"):
-        raise HTTPException(503, "Downloads are temporarily disabled by QuickDL.")
-    url, kind = str(req.url).strip(), req.kind.lower().strip()
-    p = platform(url)
-    if not setting_bool(f"{p}_enabled"):
-        raise HTTPException(503, f"{p.title()} downloads are temporarily unavailable.")
-    if kind not in {"video", "audio"}: raise HTTPException(400, "Invalid download type")
-    if not allowed(url): raise HTTPException(400, "Please enter a valid public HTTP/HTTPS URL")
-    visitor, job = vexdou_visitor or uuid.uuid4().hex, uuid.uuid4().hex
-    db = Session()
-    try:
-        db.add(Download(job_id=job, visitor_id=visitor, url=url, title="Preparing...", status="queued", kind=kind))
-        db.commit()
-    finally: db.close()
-    out = JSONResponse({"ok":True, "job_id":job, "status":"queued", "platform":platform(url), "kind":kind})
-    if not vexdou_visitor:
-        out.set_cookie("vexdou_visitor", visitor, max_age=31536000, httponly=True, samesite="lax", secure=True)
-    return out
-
-@app.get("/api/download/{job}")
-def get_download(job: str, vexdou_visitor: str | None = Cookie(default=None)):
-    if not vexdou_visitor: raise HTTPException(404, "Download not found")
-    db = Session()
-    try:
-        row = db.scalar(select(Download).where(Download.job_id == job, Download.visitor_id == vexdou_visitor))
-        if not row: raise HTTPException(404, "Download not found")
-        return serialize(row)
-    finally: db.close()
-
-@app.get("/api/history")
-def history(vexdou_visitor: str | None = Cookie(default=None)):
-    if not vexdou_visitor: return {"items":[]}
-    db = Session()
-    try:
-        rows = db.scalars(select(Download).where(
-            Download.visitor_id == vexdou_visitor, Download.status == "completed"
-        ).order_by(Download.created_at.desc()).limit(100)).all()
-        items = []
-        for r in rows:
-            s = serialize(r)
-            if s["status"] == "completed": items.append(s)
-        return {"items":items}
-    finally: db.close()
-
-@app.delete("/api/history")
-def clear_history(vexdou_visitor: str | None = Cookie(default=None)):
-    if not vexdou_visitor: return {"ok":True}
-    db = Session()
-    try:
-        rows = db.scalars(select(Download).where(Download.visitor_id == vexdou_visitor)).all()
-        for r in rows: cleanup_job(r.job_id)
-        db.execute(delete(Download).where(Download.visitor_id == vexdou_visitor))
-        db.commit()
-        return {"ok":True}
-    finally: db.close()
-
-@app.get("/api/file/{job}")
-def file(job: str, vexdou_visitor: str | None = Cookie(default=None)):
-    if not vexdou_visitor: raise HTTPException(404, "File not found")
-    db = Session()
-    try:
-        row = db.scalar(select(Download).where(
-            Download.job_id == job, Download.visitor_id == vexdou_visitor, Download.status == "completed"
-        ))
-        if not row or not row.filename: raise HTTPException(404, "File not found")
-        path = WORK / row.filename
-        if not path.exists(): raise HTTPException(410, "File expired")
-        return FileResponse(path, media_type=row.content_type or "application/octet-stream",
-                            filename=path.name,
-                            headers={"Accept-Ranges":"bytes", "Cache-Control":"private,max-age=3600"})
-    finally:
-        db.close()
-
-# --- Admin control center ---
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
-ADMIN_SESSION_SECRET = os.getenv("ADMIN_SESSION_SECRET", "").strip()
-ADMIN_COOKIE = "quickdl_admin"
-
-def sign_admin(value):
-    if not ADMIN_SESSION_SECRET: return ""
-    sig = hmac.new(ADMIN_SESSION_SECRET.encode(), value.encode(), hashlib.sha256).digest()
-    return value + "." + base64.urlsafe_b64encode(sig).decode().rstrip("=")
-
-def valid_admin_cookie(cookie):
-    if not cookie or not ADMIN_SESSION_SECRET: return False
-    try:
-        value, sig = cookie.rsplit(".", 1)
-        expected = hmac.new(ADMIN_SESSION_SECRET.encode(), value.encode(), hashlib.sha256).digest()
-        supplied = base64.urlsafe_b64decode(sig + "=" * (-len(sig) % 4))
-        if not hmac.compare_digest(expected, supplied): return False
-        ts = int(value)
-        return time.time() - ts < 12 * 3600
-    except Exception:
-        return False
-
-def admin_ok(request: Request):
-    return valid_admin_cookie(request.cookies.get(ADMIN_COOKIE))
-
-def require_admin(request: Request):
-    if not admin_ok(request): raise HTTPException(401, "Admin authentication required")
-
-def admin_file(name):
-    return FileResponse(BASE / "templates" / name)
-
-@app.get("/admin18", response_class=HTMLResponse)
-def admin_page(request: Request):
-    if not admin_ok(request): return admin_file("admin_login.html")
-    return admin_file("admin.html")
-
-class AdminLogin(BaseModel):
-    password: str
-
-class AdminSettingUpdate(BaseModel):
-    settings: dict[str, str]
-
-class AdminAction(BaseModel):
-    action: str
-    value: str | None = None
-
-@app.post("/api/admin/login")
-def admin_login(data: AdminLogin):
-    if not ADMIN_PASSWORD or not ADMIN_SESSION_SECRET:
-        raise HTTPException(503, "Admin authentication is not configured.")
-    if not hmac.compare_digest(data.password, ADMIN_PASSWORD):
-        audit("admin_login_failed", "Invalid password")
-        raise HTTPException(401, "Invalid admin password")
-    token = sign_admin(str(int(time.time())))
-    out = JSONResponse({"ok": True})
-    out.set_cookie(ADMIN_COOKIE, token, max_age=43200, httponly=True, secure=True, samesite="strict", path="/")
-    audit("admin_login", "Admin session started")
-    return out
-
-@app.post("/api/admin/logout")
-def admin_logout(request: Request):
-    require_admin(request)
-    out = JSONResponse({"ok": True})
-    out.delete_cookie(ADMIN_COOKIE, path="/")
-    audit("admin_logout", "Admin session ended")
-    return out
-
-@app.get("/api/admin/overview")
-def admin_overview(request: Request):
-    require_admin(request)
-    db = Session()
-    try:
-        rows = db.scalars(select(Download)).all()
-        now = datetime.now(timezone.utc)
-        today = [r for r in rows if r.created_at and (now-r.created_at).total_seconds() < 86400]
-        week = [r for r in rows if r.created_at and (now-r.created_at).total_seconds() < 604800]
-        status = {}
-        plats = {}
-        for r in rows:
-            status[r.status] = status.get(r.status, 0) + 1
-            p = platform(r.url); plats[p] = plats.get(p, 0) + 1
-        users = len({r.visitor_id for r in rows})
-        return {"version":"9.5.2-admin18", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
-    finally: db.close()
-
-@app.get("/api/admin/users")
-def admin_users(request: Request, limit: int = 100):
-    require_admin(request); limit=max(1,min(limit,500)); db=Session()
-    try:
-        rows=db.scalars(select(Download).order_by(Download.created_at.desc())).all(); groups={}
-        for r in rows:
-            g=groups.setdefault(r.visitor_id,{"visitor_id":r.visitor_id,"first_seen":r.created_at,"last_seen":r.created_at,"downloads":0,"completed":0,"failed":0})
-            g["downloads"]+=1; g["completed"]+=r.status=="completed"; g["failed"]+=r.status=="failed"
-            if r.created_at and (not g["first_seen"] or r.created_at<g["first_seen"]): g["first_seen"]=r.created_at
-            if r.created_at and (not g["last_seen"] or r.created_at>g["last_seen"]): g["last_seen"]=r.created_at
-        items=list(groups.values())[:limit]
-        for x in items:
-            x["first_seen"]=x["first_seen"].isoformat() if x["first_seen"] else None; x["last_seen"]=x["last_seen"].isoformat() if x["last_seen"] else None
-        return {"items":items}
-    finally: db.close()
-
-@app.get("/api/admin/downloads")
-def admin_downloads(request: Request, status: str = "", limit: int = 200):
-    require_admin(request); limit=max(1,min(limit,500)); db=Session()
-    try:
-        q=select(Download).order_by(Download.created_at.desc()).limit(limit)
-        if status: q=select(Download).where(Download.status==status).order_by(Download.created_at.desc()).limit(limit)
-        rows=db.scalars(q).all()
-        return {"items":[{"job_id":r.job_id,"visitor_id":r.visitor_id,"title":r.title,"url":r.url,"platform":platform(r.url),"kind":r.kind,"status":r.status,"error":r.error,"created_at":r.created_at.isoformat() if r.created_at else None} for r in rows]}
-    finally: db.close()
-
-@app.get("/api/admin/errors")
-def admin_errors(request: Request, limit: int = 100):
-    require_admin(request); db=Session()
-    try:
-        rows=db.scalars(select(Download).where(Download.status=="failed").order_by(Download.created_at.desc()).limit(max(1,min(limit,300)))).all(); return {"items":[{"job_id":r.job_id,"platform":platform(r.url),"error":r.error or "Unknown error","url":r.url,"created_at":r.created_at.isoformat() if r.created_at else None} for r in rows]}
-    finally: db.close()
-
-@app.get("/api/admin/audit")
-def admin_audit(request: Request, limit: int = 100):
-    require_admin(request); db=Session()
-    try:
-        rows=db.scalars(select(AdminAudit).order_by(AdminAudit.created_at.desc()).limit(max(1,min(limit,300)))).all(); return {"items":[{"action":r.action,"detail":r.detail,"created_at":r.created_at.isoformat() if r.created_at else None} for r in rows]}
-    finally: db.close()
-
-@app.post("/api/admin/settings")
-def admin_settings(data: AdminSettingUpdate, request: Request):
-    require_admin(request); allowed_keys=set(DEFAULT_SETTINGS); db=Session()
-    try:
-        changed=[]
-        for key,val in data.settings.items():
-            if key not in allowed_keys: continue
-            val=str(val)[:2000]
-            row=db.get(AdminSetting,key)
-            if row: row.value=val; row.updated_at=datetime.now(timezone.utc)
-            else: db.add(AdminSetting(key=key,value=val))
-            changed.append(key)
-        db.commit(); audit("settings_updated", ", ".join(changed)); return {"ok":True,"settings":settings_all()}
-    finally: db.close()
-
-@app.post("/api/admin/action")
-def admin_action(data: AdminAction, request: Request):
-    require_admin(request)
-    actions={"clear_failed","clear_completed","clear_active"}
-    if data.action not in actions: raise HTTPException(400,"Unknown action")
+def set_status(job,**values):
     db=Session()
     try:
-        if data.action=="clear_failed": rows=db.scalars(select(Download).where(Download.status=="failed")).all()
-        elif data.action=="clear_completed": rows=db.scalars(select(Download).where(Download.status=="completed")).all()
-        else: rows=db.scalars(select(Download)).all()
-        for r in rows: cleanup_job(r.job_id)
-        if data.action=="clear_failed": db.execute(delete(Download).where(Download.status=="failed"))
-        elif data.action=="clear_completed": db.execute(delete(Download).where(Download.status=="completed"))
-        else: db.execute(delete(Download))
-        db.commit(); audit("admin_action",data.action); return {"ok":True,"removed":len(rows)}
+        row=db.scalar(select(Download).where(Download.job_id==job))
+        if row:
+            for k,v in values.items(): setattr(row,k,v)
+            db.commit()
     finally: db.close()
+
+def process(job):
+    db=Session()
+    try:
+        row=db.scalar(select(Download).where(Download.job_id==job))
+        if not row:return
+        url,kind=row.url,row.kind
+        set_status(job,status="downloading",error=None)
+        p=platform(url)
+        # YouTube: try normal extractor first, then compatible clients.
+        clients=[None,"tv","android","web_embedded"] if p=="youtube" else [None]
+        last=None; info=None
+        for client in clients:
+            cleanup(job)
+            try:
+                log.info("job=%s platform=%s client=%s cookies=%s",job,p,client,bool(cookie_file()))
+                with yt_dlp.YoutubeDL(options(job,kind,client)) as ydl:
+                    info=ydl.extract_info(url,download=True)
+                break
+            except Exception as e:
+                last=e
+                log.warning("job=%s attempt client=%s failed: %s",job,client,e)
+        if info is None:
+            raise last or RuntimeError("No download result")
+        files=[f for f in WORK.glob(f"{job}.*") if f.is_file() and f.suffix not in {".part",".ytdl"}]
+        if not files: raise RuntimeError("yt-dlp completed without producing a file")
+        f=max(files,key=lambda x:x.stat().st_size)
+        title=str(info.get("title") or "Media")[:180]
+        thumb=info.get("thumbnail")
+        set_status(job,status="completed",title=title,thumbnail=thumb,filename=f.name,
+                   content_type=mimetypes.guess_type(f.name)[0] or "application/octet-stream")
+    except Exception as e:
+        cleanup(job)
+        set_status(job,status="failed",error=friendly_error(e))
+        log.exception("job=%s failed",job)
+    finally: db.close()
+
+def start_job(job):
+    threading.Thread(target=process,args=(job,),daemon=True).start()
+
+class DownloadRequest(BaseModel):
+    url:HttpUrl
+    kind:str="video"
+
+app=FastAPI(title="QuickDL")
+templates=Jinja2Templates(directory=str(BASE/"templates"))
+
+@app.get("/",response_class=HTMLResponse)
+def home(request:Request):
+    return templates.TemplateResponse("index.html",{"request":request})
+
+@app.get("/health")
+def health():
+    return {"ok":True,"yt_dlp":getattr(yt_dlp,"version",__import__("yt_dlp").version.__version__),
+            "cookies_configured":bool(cookie_file()),"max_file_mb":MAX_FILE_MB}
+
+@app.post("/api/download")
+def create_download(data:DownloadRequest,request:Request):
+    url=str(data.url)
+    if not valid_url(url): raise HTTPException(400,"Invalid URL")
+    kind=data.kind if data.kind in {"video","audio"} else "video"
+    visitor=request.headers.get("x-forwarded-for") or (request.client.host if request.client else "unknown")
+    job=uuid.uuid4().hex
+    db=Session()
+    try:
+        db.add(Download(job_id=job,visitor_id=visitor,url=url,kind=kind,status="queued"))
+        db.commit()
+    finally: db.close()
+    start_job(job)
+    return {"job_id":job,"status":"queued","platform":platform(url)}
+
+@app.get("/api/status/{job}")
+def status(job:str):
+    db=Session()
+    try:
+        row=db.scalar(select(Download).where(Download.job_id==job))
+        if not row: raise HTTPException(404,"Job not found")
+        return {"job_id":job,"status":row.status,"title":row.title,"thumbnail":row.thumbnail,
+                "error":row.error,"filename":row.filename,
+                "download_url":f"/api/file/{job}" if row.status=="completed" else None}
+    finally:db.close()
+
+@app.get("/api/file/{job}")
+def file(job:str):
+    db=Session()
+    try:
+        row=db.scalar(select(Download).where(Download.job_id==job))
+        if not row or row.status!="completed" or not row.filename: raise HTTPException(404,"File not ready")
+        p=WORK/row.filename
+        if not p.is_file(): raise HTTPException(404,"File expired")
+        return FileResponse(p,media_type=row.content_type or "application/octet-stream",
+                            filename=p.name)
+    finally:db.close()
+
+@app.get("/api/history")
+def history(request:Request):
+    visitor=request.headers.get("x-forwarded-for") or (request.client.host if request.client else "unknown")
+    db=Session()
+    try:
+        rows=db.scalars(select(Download).where(Download.visitor_id==visitor).order_by(Download.created_at.desc()).limit(30)).all()
+        return {"items":[{"job_id":r.job_id,"title":r.title,"url":r.url,"status":r.status,
+                          "error":r.error,"created_at":r.created_at.isoformat()} for r in rows]}
+    finally:db.close()
+
+@app.on_event("startup")
+def startup():
+    log.info("QuickDL started; cookie file=%s",cookie_file())
+    def janitor():
+        while True:
+            time.sleep(1800)
+            cutoff=time.time()-KEEP_FILE_HOURS*3600
+            for f in WORK.iterdir():
+                try:
+                    if f.is_file() and f.stat().st_mtime<cutoff and f.name not in {"quickdl.db"}: f.unlink()
+                except OSError:pass
+    threading.Thread(target=janitor,daemon=True).start()

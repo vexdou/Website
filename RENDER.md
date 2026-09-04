@@ -1,7 +1,16 @@
-# Render setup
+# QuickDL — fixed Render build
 
-Create a Web Service from this repository and keep Docker runtime enabled.
+## Render secrets
+Create a Render Secret File named `cookies.txt` containing your own valid Netscape-format cookies file. Then set:
 
-Set DATABASE_URL to your PostgreSQL connection string and configure the four R2 variables. The embedded worker is enabled with DISABLE_EMBEDDED_WORKER=0.
+`YTDLP_COOKIES_FILE=/etc/secrets/cookies.txt`
 
-The free Render web service sleeps after inactivity and its local filesystem is ephemeral, so downloaded media is uploaded to R2 rather than stored permanently on the container.
+Do not commit real cookies to GitHub.
+
+Optional:
+- `DATABASE_URL`
+- `MAX_FILE_MB` (default 100)
+- `KEEP_FILE_HOURS` (default 6)
+- `COOKIES_CONTENT` (only if you understand the secret-handling implications)
+
+YouTube/Instagram access can still be limited by the platforms. This build does not bypass access controls; it uses yt-dlp for URLs the configured account/session is authorized to access.

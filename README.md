@@ -1,18 +1,16 @@
-# QuickDL v9.2
+# QuickDL — fixed Render build
 
-Modern responsive QuickDL build with FastAPI + yt-dlp, local ephemeral storage, and DATABASE_URL/Postgres for job/history metadata. R2 is not required.
+## Render secrets
+Create a Render Secret File named `cookies.txt` containing your own valid Netscape-format cookies file. Then set:
 
-## YouTube improvements
-- Docker now supplies Node.js 22.
-- yt-dlp EJS support is installed through `yt-dlp[default]`.
-- The Python backend explicitly enables the Node.js runtime for YouTube JavaScript challenge solving.
-- Public, embeddable YouTube media can use the `web_embedded` fallback when the normal public client is rejected.
+`YTDLP_COOKIES_FILE=/etc/secrets/cookies.txt`
 
-These changes improve compatibility with current public YouTube extraction. They do not bypass private, members-only, age-restricted, or other media that legitimately requires account authorization. YouTube can also impose server-side rate limits or access controls that no downloader can guarantee to overcome.
+Do not commit real cookies to GitHub.
 
-## Deploy
-Deploy the repository to Render using the included Dockerfile/render.yaml. The Docker build prints the Node.js and yt-dlp versions so runtime problems are easier to diagnose.
+Optional:
+- `DATABASE_URL`
+- `MAX_FILE_MB` (default 100)
+- `KEEP_FILE_HOURS` (default 6)
+- `COOKIES_CONTENT` (only if you understand the secret-handling implications)
 
-Support: costumer@quickdl.site
-
-For a quick emergency stop, use **Settings → Downloads enabled** or **Security → Disable downloads**. The public site remains separate from the admin console.
+YouTube/Instagram access can still be limited by the platforms. This build does not bypass access controls; it uses yt-dlp for URLs the configured account/session is authorized to access.

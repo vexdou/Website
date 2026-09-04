@@ -1,6 +1,5 @@
 services:
   - type: web
     name: quickdl
-    env: docker
-    healthCheckPath: /api/health
-    autoDeploy: true
+    runtime: docker
+    healthCheckPath: /health

@@ -1,8 +1,16 @@
-# QuickDL setup
+# QuickDL — fixed Render build
 
-1. Create a PostgreSQL database.
-2. Create a Cloudflare R2 bucket.
-3. Add DATABASE_URL, R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET to Render.
-4. Deploy with Docker.
-5. Point quickdl.site DNS/custom domain to the Render web service.
-6. Test `/api/health`, then paste a public media URL.
+## Render secrets
+Create a Render Secret File named `cookies.txt` containing your own valid Netscape-format cookies file. Then set:
+
+`YTDLP_COOKIES_FILE=/etc/secrets/cookies.txt`
+
+Do not commit real cookies to GitHub.
+
+Optional:
+- `DATABASE_URL`
+- `MAX_FILE_MB` (default 100)
+- `KEEP_FILE_HOURS` (default 6)
+- `COOKIES_CONTENT` (only if you understand the secret-handling implications)
+
+YouTube/Instagram access can still be limited by the platforms. This build does not bypass access controls; it uses yt-dlp for URLs the configured account/session is authorized to access.
