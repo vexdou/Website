@@ -3,88 +3,620 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+
   <meta name="theme-color" content="#06100d">
   <meta name="description" content="QuickDL — fast, simple media downloader">
+
   <link rel="manifest" href="/manifest.json">
   <link rel="stylesheet" href="/static/styles.css?v=9.3">
+
   <title>QuickDL — Media Downloader</title>
 </head>
-<body>
-  <div class="bg-orb orb-1"></div><div class="bg-orb orb-2"></div><div class="grid-glow"></div>
 
+<body>
+
+  <!-- Background -->
+  <div class="bg-orb orb-1"></div>
+  <div class="bg-orb orb-2"></div>
+  <div class="grid-glow"></div>
+
+
+  <!-- =========================
+       NAVBAR
+  ========================== -->
   <header class="topbar">
     <div class="nav-shell">
-      <button class="brand" data-view="home" aria-label="QuickDL home">
+
+      <button
+        class="brand"
+        data-view="home"
+        aria-label="QuickDL home"
+      >
         <span class="brand-mark">Q</span>
-        <span class="brand-copy"><strong>QUICKDL</strong><small>MEDIA DOWNLOADER</small></span>
+
+        <span class="brand-copy">
+          <strong>QUICKDL</strong>
+          <small>MEDIA DOWNLOADER</small>
+        </span>
       </button>
-      <nav class="nav-tabs" aria-label="Main navigation">
-        <button class="nav-tab active" data-view="home">Home</button>
-        <button class="nav-tab" data-view="history">History</button>
-        <button class="nav-tab" data-view="favorites">Favorites</button>
+
+
+      <nav
+        class="nav-tabs"
+        aria-label="Main navigation"
+      >
+        <button
+          class="nav-tab active"
+          data-view="home"
+        >
+          Home
+        </button>
+
+        <button
+          class="nav-tab"
+          data-view="history"
+        >
+          History
+        </button>
+
+        <button
+          class="nav-tab"
+          data-view="favorites"
+        >
+          Favorites
+        </button>
       </nav>
+
     </div>
   </header>
 
+
+
+  <!-- =========================
+       MAIN
+  ========================== -->
   <main class="page-shell">
-    <section id="homeView" class="view">
-      <div id="announcement" class="public-announcement hidden"></div>
+
+
+    <!-- =========================
+         HOME
+    ========================== -->
+    <section
+      id="homeView"
+      class="view"
+    >
+
+      <div
+        id="announcement"
+        class="public-announcement hidden"
+      ></div>
+
+
+      <!-- HERO -->
       <div class="hero">
-        <div class="pill"><span class="live-dot"></span> FAST • CLEAN • EASY</div>
-        <h1>Download media.<br><em>Keep it.</em></h1>
-        <p>Paste a video or media link. QuickDL prepares it for preview and saving on your device.</p>
+
+        <div class="pill">
+          <span class="live-dot"></span>
+          FAST • CLEAN • EASY
+        </div>
+
+        <h1>
+          Download media.<br>
+          <em>Keep it.</em>
+        </h1>
+
+        <p>
+          Paste a video or media link.
+          QuickDL prepares it for preview and saving on your device.
+        </p>
+
       </div>
 
+
+
+      <!-- =========================
+           DOWNLOAD CARD
+      ========================== -->
       <section class="download-card">
-        <div class="card-topline"><span>DOWNLOAD MEDIA</span><span class="secure"><i>✓</i> Ready</span></div>
-        <label class="url-field">
-          <span class="url-icon">↗</span>
-          <input id="url" type="url" inputmode="url" autocomplete="off" placeholder="Paste your media URL here…" aria-label="Media URL">
-          <button id="pasteBtn" class="paste-btn" type="button">Paste</button>
-        </label>
-        <div class="download-controls">
-          <label class="type-select"><span>Format</span><select id="kind"><option value="video">🎬 Video</option><option value="audio">🎵 MP3 Audio</option></select></label>
-          <button id="downloadBtn" class="download-main" type="button"><span class="download-icon">↓</span><span><b>Download</b><small>Start download</small></span></button>
+
+        <div class="card-topline">
+
+          <span>
+            DOWNLOAD MEDIA
+          </span>
+
+          <span class="secure">
+            <i>✓</i>
+            Ready
+          </span>
+
         </div>
-        <div class="platforms"><span>Works with</span><b>YouTube</b><b>TikTok</b><b>Instagram</b><b>Facebook</b><b>Pinterest</b><b>X</b></div>
-        <div id="status" class="status hidden"><div class="status-head"><div class="status-badge" id="statusBadge">•••</div><div><strong id="statusText">Preparing…</strong><small id="statusSub">Your media is being processed.</small></div><time id="statusTime"></time></div><div class="progress-track"><i id="bar"></i></div></div>
-        <p class="notice"><span>i</span> Public and otherwise accessible media is supported. A source can still block automated access, require login, or use DRM.</p>
+
+
+        <!-- URL INPUT -->
+        <label class="url-field">
+
+          <span class="url-icon">
+            ↗
+          </span>
+
+          <input
+            id="url"
+            type="url"
+            inputmode="url"
+            autocomplete="off"
+            placeholder="Paste your media URL here…"
+            aria-label="Media URL"
+          >
+
+          <button
+            id="pasteBtn"
+            class="paste-btn"
+            type="button"
+          >
+            Paste
+          </button>
+
+        </label>
+
+
+
+        <!-- DOWNLOAD CONTROLS -->
+        <div class="download-controls">
+
+          <label class="type-select">
+
+            <span>
+              Format
+            </span>
+
+            <select id="kind">
+
+              <option value="video">
+                🎬 Video
+              </option>
+
+              <option value="audio">
+                🎵 MP3 Audio
+              </option>
+
+            </select>
+
+          </label>
+
+
+          <button
+            id="downloadBtn"
+            class="download-main"
+            type="button"
+          >
+
+            <span class="download-icon">
+              ↓
+            </span>
+
+            <span>
+              <b>
+                Download
+              </b>
+
+              <small>
+                Start download
+              </small>
+            </span>
+
+          </button>
+
+        </div>
+
+
+
+        <!-- PLATFORMS -->
+        <div class="platforms">
+
+          <span>
+            Works with
+          </span>
+
+          <b>YouTube</b>
+          <b>TikTok</b>
+          <b>Instagram</b>
+          <b>Facebook</b>
+          <b>Pinterest</b>
+          <b>X</b>
+
+        </div>
+
+
+
+        <!-- STATUS -->
+        <div
+          id="status"
+          class="status hidden"
+        >
+
+          <div class="status-head">
+
+            <div
+              class="status-badge"
+              id="statusBadge"
+            >
+              •••
+            </div>
+
+            <div>
+
+              <strong id="statusText">
+                Preparing…
+              </strong>
+
+              <small id="statusSub">
+                Your media is being processed.
+              </small>
+
+            </div>
+
+            <time id="statusTime"></time>
+
+          </div>
+
+
+          <div class="progress-track">
+            <i id="bar"></i>
+          </div>
+
+        </div>
+
+
+
+        <!-- NOTICE -->
+        <p class="notice">
+
+          <span>
+            i
+          </span>
+
+          Public and otherwise accessible media is supported.
+          A source can still block automated access, require login,
+          or use DRM.
+
+        </p>
+
       </section>
 
+
+
+      <!-- =========================
+           HOW IT WORKS
+      ========================== -->
       <section class="how-grid">
-        <article><span>01</span><div><strong>Paste</strong><p>Put your video or media URL above.</p></div></article>
-        <article><span>02</span><div><strong>Process</strong><p>QuickDL prepares the available media.</p></div></article>
-        <article><span>03</span><div><strong>Preview & Save</strong><p>Play it here or save it to your device.</p></div></article>
+
+        <article>
+
+          <span>
+            01
+          </span>
+
+          <div>
+
+            <strong>
+              Paste
+            </strong>
+
+            <p>
+              Put your video or media URL above.
+            </p>
+
+          </div>
+
+        </article>
+
+
+        <article>
+
+          <span>
+            02
+          </span>
+
+          <div>
+
+            <strong>
+              Process
+            </strong>
+
+            <p>
+              QuickDL prepares the available media.
+            </p>
+
+          </div>
+
+        </article>
+
+
+        <article>
+
+          <span>
+            03
+          </span>
+
+          <div>
+
+            <strong>
+              Preview & Save
+            </strong>
+
+            <p>
+              Play it here or save it to your device.
+            </p>
+
+          </div>
+
+        </article>
+
       </section>
+
     </section>
 
-    <section id="historyView" class="view hidden">
-      <div class="section-head"><div><span class="kicker">YOUR ACTIVITY</span><h2>Download history</h2><p>Only successful downloads are shown here.</p></div><button id="clear" class="outline-btn">Clear</button></div>
-      <div id="history" class="history-list"></div>
+
+
+    <!-- =========================
+         HISTORY
+    ========================== -->
+    <section
+      id="historyView"
+      class="view hidden"
+    >
+
+      <div class="section-head">
+
+        <div>
+
+          <span class="kicker">
+            YOUR ACTIVITY
+          </span>
+
+          <h2>
+            Download history
+          </h2>
+
+          <p>
+            Only successful downloads are shown here.
+          </p>
+
+        </div>
+
+
+        <button
+          id="clear"
+          class="outline-btn"
+        >
+          Clear
+        </button>
+
+      </div>
+
+
+      <div
+        id="history"
+        class="history-list"
+      ></div>
+
     </section>
 
-    <section id="favoritesView" class="view hidden">
-      <div class="section-head"><div><span class="kicker">SAVED ITEMS</span><h2>Favorites</h2><p>Your saved downloads, ready to open again.</p></div></div>
-      <div id="favorites" class="favorite-grid"></div>
+
+
+    <!-- =========================
+         FAVORITES
+    ========================== -->
+    <section
+      id="favoritesView"
+      class="view hidden"
+    >
+
+      <div class="section-head">
+
+        <div>
+
+          <span class="kicker">
+            SAVED ITEMS
+          </span>
+
+          <h2>
+            Favorites
+          </h2>
+
+          <p>
+            Your saved downloads, ready to open again.
+          </p>
+
+        </div>
+
+      </div>
+
+
+      <div
+        id="favorites"
+        class="favorite-grid"
+      ></div>
+
     </section>
+
   </main>
 
-  <footer class="footer">
-    <div><strong>QUICKDL</strong><span>Fast media downloader</span></div>
-    <div class="support">Complaints &amp; support · <a href="mailto:costumer@quickdl.site">costumer@quickdl.site</a></div>
-    <div class="developer"><span>Developer: <strong>Vexdou</strong></span><a class="tiktok-link" href="https://www.tiktok.com/@vexdou" target="_blank" rel="noopener noreferrer" aria-label="Follow Vexdou on TikTok"><svg class="tiktok-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.4 3.2c.45 2.55 1.88 4.1 4.4 4.38v3.1a9.15 9.15 0 0 1-4.36-1.3v6.05a5.58 5.58 0 1 1-4.83-5.52v3.17a2.42 2.42 0 1 0 1.7 2.35V3.2h3.09Z" fill="currentColor"/></svg><span>Vexdou</span></a></div>
-    <span>© 2026 QuickDL</span>
-  </footer>
-  <div id="toast" class="toast" role="status"></div>
 
-  <div id="player" class="modal hidden" aria-hidden="true">
-    <div class="player-box">
-      <button id="closePlayer" class="player-close" aria-label="Close player">×</button>
-      <div class="player-header"><span class="player-kicker">PREVIEW</span><h3 id="playerTitle">Media preview</h3></div>
-      <div class="player-stage"><video id="video" controls playsinline preload="metadata"></video><audio id="audio" controls></audio></div>
-      <a id="saveBtn" class="save-btn" href="#"><span>↓</span> Save to device</a>
+
+  <!-- =========================
+       FOOTER
+  ========================== -->
+  <footer class="footer">
+
+    <div>
+
+      <strong>
+        QUICKDL
+      </strong>
+
+      <span>
+        Fast media downloader
+      </span>
+
     </div>
+
+
+    <div class="support">
+
+      Complaints &amp; support ·
+
+      <a href="mailto:costumer@quickdl.site">
+        costumer@quickdl.site
+      </a>
+
+    </div>
+
+
+    <div class="developer">
+
+      <span>
+        Developer:
+        <strong>
+          Vexdou
+        </strong>
+      </span>
+
+
+      <a
+        class="tiktok-link"
+        href="https://www.tiktok.com/@vexdou"
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label="Follow Vexdou on TikTok"
+      >
+
+        <svg
+          class="tiktok-icon"
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+        >
+
+          <path
+            d="M15.4 3.2c.45 2.55 1.88 4.1 4.4 4.38v3.1a9.15 9.15 0 0 1-4.36-1.3v6.05a5.58 5.58 0 1 1-4.83-5.52v3.17a2.42 2.42 0 1 0 1.7 2.35V3.2h3.09Z"
+            fill="currentColor"
+          />
+
+        </svg>
+
+        <span>
+          Vexdou
+        </span>
+
+      </a>
+
+    </div>
+
+
+    <span>
+      © 2026 QuickDL
+    </span>
+
+  </footer>
+
+
+
+  <!-- =========================
+       TOAST
+  ========================== -->
+  <div
+    id="toast"
+    class="toast"
+    role="status"
+  ></div>
+
+
+
+  <!-- =========================
+       PLAYER MODAL
+  ========================== -->
+  <div
+    id="player"
+    class="modal hidden"
+    aria-hidden="true"
+  >
+
+    <div class="player-box">
+
+      <button
+        id="closePlayer"
+        class="player-close"
+        aria-label="Close player"
+      >
+        ×
+      </button>
+
+
+      <div class="player-header">
+
+        <span class="player-kicker">
+          PREVIEW
+        </span>
+
+        <h3 id="playerTitle">
+          Media preview
+        </h3>
+
+      </div>
+
+
+      <div class="player-stage">
+
+        <video
+          id="video"
+          controls
+          playsinline
+          preload="metadata"
+        ></video>
+
+        <audio
+          id="audio"
+          controls
+        ></audio>
+
+      </div>
+
+
+      <a
+        id="saveBtn"
+        class="save-btn"
+        href="#"
+      >
+
+        <span>
+          ↓
+        </span>
+
+        Save to device
+
+      </a>
+
+    </div>
+
   </div>
+
+
+
+  <!-- =========================
+       QUICKDL JAVASCRIPT
+  ========================== -->
   <script src="/static/app.js?v=9.3"></script>
+
+
+
+  <!-- =========================
+       THUNDERBOLT AI CHAT
+  ========================== -->
+  <script
+    defer
+    src="https://www.thunderbolt.com/gateway/api/v1/thunderbolt-ui/embed.js"
+  ></script>
+
 </body>
 </html>
