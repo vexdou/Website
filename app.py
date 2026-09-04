@@ -72,10 +72,15 @@ UA = os.getenv(
 MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "500"))
 KEEP_FILE_HOURS = float(os.getenv("KEEP_FILE_HOURS", "6"))
 
-# ---- AUTO-DETECT COOKIES.TXT ----
-_env_cookie = os.getenv("YTDLP_COOKIES_FILE")
-if _env_cookie and Path(_env_cookie).exists():
-    COOKIES_FILE = Path(_env_cookie)
+# ---- ROBUST COOKIES SETUP FROM ENV OR FILE ----
+COOKIES_FILE = WORK / "cookies.txt"
+cookie_content = os.getenv("COOKIES_CONTENT", "").strip()
+if cookie_content:
+    try:
+        COOKIES_FILE.write_text(cookie_content)
+        log.info("Cookies successfully written from COOKIES_CONTENT env var.")
+    except Exception as e:
+        log.error("Failed to write cookies from env: %s", e)
 elif (BASE / "cookies.txt").exists():
     COOKIES_FILE = BASE / "cookies.txt"
 else:
@@ -431,7 +436,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="9.5.1", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="9.5.2", lifespan=lifespan)
 
 @app.get("/")
 def home():
@@ -457,7 +462,7 @@ def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "9.5.1"}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "9.5.2"}
     finally: db.close()
 
 class DownloadRequest(BaseModel):
@@ -637,7 +642,7 @@ def admin_overview(request: Request):
             status[r.status] = status.get(r.status, 0) + 1
             p = platform(r.url); plats[p] = plats.get(p, 0) + 1
         users = len({r.visitor_id for r in rows})
-        return {"version":"9.5.1-admin18", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
+        return {"version":"9.5.2-admin18", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
     finally: db.close()
 
 @app.get("/api/admin/users")
@@ -698,7 +703,7 @@ def admin_settings(data: AdminSettingUpdate, request: Request):
 @app.post("/api/admin/action")
 def admin_action(data: AdminAction, request: Request):
     require_admin(request)
-    actions={"clear_failed","clear_completed","clear_all"}
+    actions={"clear_failed","clear_completed","clear_active"}
     if data.action not in actions: raise HTTPException(400,"Unknown action")
     db=Session()
     try:
@@ -707,7 +712,7 @@ def admin_action(data: AdminAction, request: Request):
         else: rows=db.scalars(select(Download)).all()
         for r in rows: cleanup_job(r.job_id)
         if data.action=="clear_failed": db.execute(delete(Download).where(Download.status=="failed"))
-        elif data.action=="clear_completed": db.execute(delete(Download).where(Download.status=="completed"))
+        elif data.action=="clear_completed": db.execute(delete(Download].where(Download.status=="completed"))
         else: db.execute(delete(Download))
         db.commit(); audit("admin_action",data.action); return {"ok":True,"removed":len(rows)}
     finally: db.close()
