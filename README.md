@@ -1,26 +1,41 @@
-# QuickDL v9.2
+# QuickDL Credits + Stripe
 
-Modern responsive QuickDL build with FastAPI + yt-dlp, local ephemeral storage, and DATABASE_URL/Postgres for job/history metadata. R2 is not required.
+This build adds a server-side credit ledger and Stripe Checkout/webhooks.
 
-## YouTube improvements
-- Docker now supplies Node.js 22.
-- yt-dlp EJS support is installed through `yt-dlp[default]`.
-- The Python backend explicitly enables the Node.js runtime for YouTube JavaScript challenge solving.
-- Public, embeddable YouTube media can use the `web_embedded` fallback when the normal public client is rejected.
+## Default credit system
+- New visitor: 100 free credits, once.
+- Video or MP3: 2 credits.
+- Starter: 100 credits / $1.
+- Plus: 550 credits / $5.
+- Pro: 1,200 credits / $10.
 
-These changes improve compatibility with current public YouTube extraction. They do not bypass private, members-only, age-restricted, or other media that legitimately requires account authorization. YouTube can also impose server-side rate limits or access controls that no downloader can guarantee to overcome.
+Packages are configurable through `CREDIT_PACKAGES_JSON`.
 
-## Deploy
-Deploy the repository to Render using the included Dockerfile/render.yaml. The Docker build prints the Node.js and yt-dlp versions so runtime problems are easier to diagnose.
+## Render environment variables
+Set:
+- DATABASE_URL
+- ADMIN_PASSWORD
+- ADMIN_SESSION_SECRET
+- STRIPE_SECRET_KEY
+- STRIPE_WEBHOOK_SECRET
+- PUBLIC_BASE_URL=https://quickdl.site
 
-Support: costumer@quickdl.site
+Never commit Stripe secret/webhook keys to GitHub.
 
-## Admin18
-Open `/admin18` for the private administration console. Configure these Render environment variables before using it:
+## Stripe webhook
+Create a Stripe webhook endpoint:
+`https://quickdl.site/api/stripe/webhook`
 
-- `ADMIN_PASSWORD` — strong admin password; never commit it to Git.
-- `ADMIN_SESSION_SECRET` — long random secret used to sign the admin session cookie.
+Enable:
+- checkout.session.completed
+- checkout.session.async_payment_succeeded
 
-Admin18 includes dashboard, users, downloads, analytics, platform switches, error center, audit logs, website settings, maintenance mode, announcement control, runtime limits, and emergency download controls. Settings are stored in PostgreSQL.
+The webhook secret goes in `STRIPE_WEBHOOK_SECRET`.
 
-For a quick emergency stop, use **Settings → Downloads enabled** or **Security → Disable downloads**. The public site remains separate from the admin console.
+Credits are granted only after a verified webhook and are idempotent by Stripe Checkout Session ID.
+
+## Database
+The app creates new tables automatically and includes a small additive migration for the new `downloads.credit_cost` and `downloads.credit_refunded` columns. Back up production data before deployment.
+
+## Important identity note
+Credits are tied to the server-side `vexdou_visitor` cookie. Clearing cookies loses the browser's link to that credit account. For production money flows, an account/email login is recommended.
