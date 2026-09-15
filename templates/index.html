@@ -1,117 +1,105 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>QuickDL — Download Fast</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>QuickDL — Media Downloader</title>
     <style>
+        /* CSS-kan waxa uu ku darayaa "Smoothness" iyo qurxin */
         :root {
-            --primary: #6366f1;
-            --bg: #0f172a;
-            --card-bg: #1e293b;
-            --text: #f8fafc;
+            --bg-color: #0b0a12;
+            --card-color: #161520;
+            --text-color: #ffffff;
+            --accent-color: #6366f1;
         }
 
         body {
-            font-family: 'Segoe UI', system-ui, sans-serif;
-            background-color: var(--bg);
-            color: var(--text);
+            font-family: 'Inter', -apple-system, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
             margin: 0;
+            padding: 20px;
             display: flex;
             flex-direction: column;
             align-items: center;
-            min-height: 100vh;
         }
 
-        header {
-            width: 100%;
-            max-width: 1000px;
-            padding: 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
+        /* Hero Section Styling */
+        .hero { text-align: center; margin: 40px 0; }
+        .hero h1 { font-size: 2.5rem; line-height: 1.2; margin-bottom: 15px; }
+        .hero span { color: var(--accent-color); }
+        .badge { background: #1e1d29; padding: 6px 12px; border-radius: 20px; font-size: 0.8rem; display: inline-block; margin-bottom: 10px; }
 
-        .brand { font-size: 1.5rem; font-weight: bold; color: var(--primary); text-decoration: none; }
-
-        .hero {
-            text-align: center;
-            padding: 60px 20px;
-        }
-
-        .hero h1 { font-size: 3rem; margin-bottom: 10px; }
-
+        /* Download Card Styling */
         .download-card {
-            background: var(--card-bg);
-            padding: 30px;
+            background: var(--card-color);
+            padding: 25px;
             border-radius: 16px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.3);
-            width: 90%;
-            max-width: 600px;
+            border: 1px solid #2d2c3d;
+            width: 100%;
+            max-width: 500px;
+            transition: transform 0.3s ease;
         }
 
-        .input-row {
-            display: flex;
-            gap: 10px;
-        }
-
+        .input-row { display: flex; gap: 10px; flex-wrap: wrap; }
+        
         input, select, button {
-            padding: 12px;
-            border-radius: 8px;
-            border: none;
-            outline: none;
-        }
-
-        input { flex: 1; background: #334155; color: white; }
-
-        button {
-            background: var(--primary);
+            padding: 12px 16px;
+            border-radius: 10px;
+            border: 1px solid #333;
+            background: #0b0a12;
             color: white;
-            cursor: pointer;
-            transition: 0.3s;
+            font-size: 1rem;
         }
 
-        button:hover { opacity: 0.9; transform: translateY(-2px); }
+        input { flex: 2; }
+        select { flex: 1; cursor: pointer; }
+        button#downloadBtn { 
+            background: var(--accent-color); 
+            border: none; 
+            cursor: pointer;
+            transition: background 0.3s ease;
+        }
+        button#downloadBtn:hover { background: #4f46e5; }
 
-        .platforms {
-            margin-top: 40px;
-            display: flex;
-            gap: 20px;
-            opacity: 0.6;
+        .cost-note { font-size: 0.85rem; color: #888; margin-top: 15px; }
+
+        /* Platforms list */
+        .platforms { 
+            display: flex; 
+            justify-content: center; 
+            gap: 15px; 
+            margin-top: 30px; 
+            opacity: 0.5; 
+            font-size: 0.9rem; 
         }
     </style>
 </head>
 <body>
 
-<header>
-    <a class="brand" href="/">QuickDL</a>
-    <div class="head-right">
-        <button id="creditsBtn">100 Credits</button>
-    </div>
-</header>
+    <main>
+        <section class="hero">
+            <div class="badge">⚡ Fast · Simple · Private</div>
+            <h1>Download media.<br><span>Without the hassle.</span></h1>
+            <p>Paste a public media URL and get your video or MP3 in seconds.</p>
+        </section>
 
-<main>
-    <section class="hero">
-        <h1>Download media. <br><span style="color: var(--primary);">Without the hassle.</span></h1>
-        <p>Paste a public media URL and get your video or MP3 in seconds.</p>
-    </section>
+        <section class="download-card">
+            <div class="input-row">
+                <input id="url" type="url" placeholder="Paste video link here…" autocomplete="off">
+                <select id="kind">
+                    <option value="video">MP4</option>
+                    <option value="audio">MP3</option>
+                </select>
+                <button id="downloadBtn">Download</button>
+            </div>
+            <div class="cost-note">Each download costs <b>2 credits</b>.</div>
+        </section>
 
-    <section class="download-card">
-        <div class="input-row">
-            <input id="url" type="url" placeholder="Paste video link here...">
-            <select id="kind">
-                <option value="video">MP4</option>
-                <option value="audio">MP3</option>
-            </select>
-            <button id="downloadBtn">Download</button>
+        <div class="platforms">
+            <span>YouTube</span><span>TikTok</span><span>Instagram</span><span>Facebook</span>
         </div>
-        <p style="margin-top: 15px; font-size: 0.9rem; color: #94a3b8;">Each download costs 2 credits.</p>
-    </section>
-
-    <div class="platforms">
-        <span>YouTube</span> · <span>TikTok</span> · <span>Instagram</span> · <span>Twitter</span>
-    </div>
-</main>
+    </main>
 
 </body>
 </html>
