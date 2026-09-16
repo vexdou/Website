@@ -119,6 +119,17 @@ class PayPalOrder(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
     captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+class AppError(Base):
+    __tablename__ = "app_errors"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    reference: Mapped[str] = mapped_column(String(32), index=True)
+    method: Mapped[str] = mapped_column(String(12), default="GET")
+    path: Mapped[str] = mapped_column(Text)
+    status: Mapped[int] = mapped_column(Integer, default=500)
+    error_type: Mapped[str] = mapped_column(String(160), default="Exception")
+    message: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
 Base.metadata.create_all(engine)
 
 def migrate_credit_columns():
@@ -668,23 +679,14 @@ def instagram_public_fallback(job, url, kind):
         return None
 
 def human_error(exc):
-    text = re.sub(r"\s+", " ", str(exc)).strip()
-    low = text.lower()
-    if "comfortable for some audiences" in low:
-        return "This media could not be processed right now."
-    if "sign in" in low or "login required" in low or "authentication" in low:
-        return "The source could not provide this media."
-    if "private" in low or "drm" in low:
-        return "The source could not provide this media."
-    if "429" in low or "too many requests" in low or "rate-limit" in low:
-        return "The source is temporarily busy. Please try again shortly."
-    if "403" in low or "forbidden" in low:
-        return "The source is temporarily unavailable for this request."
-    if "unsupported url" in low or "no suitable extractor" in low:
+    text = re.sub(r"\s+", " ", str(exc)).strip().lower()
+    if any(x in text for x in ("private", "drm", "login required", "authentication", "sign in")):
+        return "This media could not be downloaded."
+    if any(x in text for x in ("429", "too many requests", "rate-limit", "timeout", "timed out")):
+        return "The download could not be completed right now. Please try again."
+    if any(x in text for x in ("unsupported url", "no suitable extractor")):
         return "This link could not be processed."
-    if "timed out" in low or "timeout" in low:
-        return "The source took too long to respond. Please try again."
-    return text[:700] or "Download failed. Please try again."
+    return "The download could not be completed. Please try another link."
 
 def public_og_video_fallback(job, url, kind, source_name):
     """Public-only fallback for pages exposing a direct og:video URL.
@@ -775,11 +777,13 @@ def ytdlp_options(job, kind, youtube_embedded=False, youtube_client=None):
         "format": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b" if kind == "video" else "ba/b",
         "merge_output_format": "mp4" if kind == "video" else None,
         "max_filesize": int(setting_get("max_file_mb") or MAX_FILE_MB) * 1024 * 1024,
-        "js_runtimes": {"node": {}} if shutil.which("node") else None,
+        "js_runtimes": ({"deno": {}} if shutil.which("deno") else ({"node": {}} if shutil.which("node") else None)),
+        "impersonate": "chrome" if curl_requests is not None else None,
         "sleep_interval_requests": 1,
         "sleep_interval": 1,
         "max_sleep_interval": 4,
         "overwrites": True,
+        "remote_components": "ejs:npm" if shutil.which("deno") else None,
     }
 
     # Current yt-dlp YouTube extraction works best when EJS/Node is enabled.
@@ -1024,20 +1028,42 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="25.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="27.0.0", lifespan=lifespan)
+
+def record_app_error(ref, request, exc, status=500):
+    try:
+        db = Session()
+        try:
+            db.add(AppError(reference=ref, method=request.method[:12], path=str(request.url.path)[:2000], status=status, error_type=type(exc).__name__[:160], message=str(exc)[:4000]))
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        log.exception("Could not persist application error ref=%s", ref)
 
 @app.exception_handler(Exception)
 async def unhandled_exception(request: Request, exc: Exception):
-    log.exception("Unhandled request error %s %s", request.method, request.url.path)
-    return JSONResponse(status_code=500, content={"ok": False, "error": "internal_error", "message": "Server error. Check the admin Error Center / Render logs."})
+    # Never expose framework, database, provider, or hosting details to users.
+    # The full exception remains available to the admin Error Center/server logs.
+    ref = uuid.uuid4().hex[:12]
+    log.exception("Unhandled request error ref=%s %s %s", ref, request.method, request.url.path)
+    record_app_error(ref, request, exc, 500)
+    return JSONResponse(status_code=500, content={"ok": False, "error": "internal_error", "message": "Something went wrong. Please try again.", "reference": ref})
 
 def _cookie_secure():
     return os.getenv("COOKIE_SECURE", "true").lower() in {"1","true","yes","on"}
 
+def _valid_visitor(value):
+    value = (value or "").strip().lower()
+    return value if re.fullmatch(r"[a-f0-9]{32}", value) else None
+
 def _visitor_from(request: Request, cookie_value: str | None = None):
-    # First-party cookie is authoritative; localStorage header is only a fallback.
-    value = (cookie_value or request.headers.get("x-quickdl-visitor") or "").strip()
-    return value if re.fullmatch(r"[a-f0-9]{32}", value) else uuid.uuid4().hex
+    # Prefer a valid first-party cookie. If an old/invalid cookie exists, fall back
+    # to the browser header before creating a brand-new identity. This prevents
+    # endless anonymous identities after upgrades.
+    cookie = _valid_visitor(cookie_value)
+    header = _valid_visitor(request.headers.get("x-quickdl-visitor"))
+    return cookie or header or uuid.uuid4().hex
 
 def _set_visitor_cookie(response, visitor):
     response.set_cookie("vexdou_visitor", visitor, max_age=31536000, httponly=True, samesite="lax", secure=_cookie_secure(), path="/")
@@ -1064,14 +1090,14 @@ def sw(): return FileResponse(BASE / "sw.js", media_type="application/javascript
 
 @app.get("/api/public-config")
 def public_config():
-    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance"),"credits_enabled":True,"monthly_free":int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS),"video_cost":int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST),"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET),"paypal_mode":PAYPAL_MODE,"paypal_client_id":PAYPAL_CLIENT_ID,"currency":PAYPAL_CURRENCY,"google_login_enabled":setting_bool("google_login_enabled"),"google_client_id":GOOGLE_CLIENT_ID,"login_enabled":setting_bool("login_enabled"),"email_auth_configured":bool(SMTP_PASSWORD or RESEND_API_KEY),"email_provider":EMAIL_PROVIDER,"ads_enabled":setting_bool("ads_enabled"),"ads_text":setting_get("ads_text"),"ads_url":setting_get("ads_url"),"ads_button_text":setting_get("ads_button_text")}
+    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance"),"credits_enabled":True,"monthly_free":int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS),"video_cost":int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST),"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET and PAYPAL_MODE=="live"),"paypal_live_ready":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET and PAYPAL_MODE=="live"),"paypal_client_id":PAYPAL_CLIENT_ID if PAYPAL_MODE=="live" else "","currency":PAYPAL_CURRENCY,"google_login_enabled":setting_bool("google_login_enabled"),"google_client_id":GOOGLE_CLIENT_ID,"login_enabled":setting_bool("login_enabled"),"email_auth_configured":bool(SMTP_PASSWORD or RESEND_API_KEY),"ads_enabled":setting_bool("ads_enabled"),"ads_text":setting_get("ads_text"),"ads_url":setting_get("ads_url"),"ads_button_text":setting_get("ads_button_text")}
 
 @app.get("/api/health")
 def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "25.0.0", "worker": WORKER_HEARTBEAT}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "27.0.0", "worker": WORKER_HEARTBEAT}
     finally: db.close()
 
 class DownloadRequest(BaseModel):
@@ -1170,8 +1196,7 @@ def create_download(req: DownloadRequest, request: Request, vexdou_visitor: str 
         queue_user_email(visitor, "QuickDL — you are out of credits", "Your free credits are finished", f"Your QuickDL balance is {remaining or 0} credits. A video download requires {cost} credits. You can add credits from the Credits section.", "CREDIT BALANCE", "#f59e0b")
         raise HTTPException(402, detail={"code":"OUT_OF_CREDITS","message":"You are out of credits. Please add credits to continue.","credits":remaining or 0,"cost":cost})
     out = JSONResponse({"ok":True, "job_id":job, "status":"queued", "platform":platform(url), "kind":kind})
-    if not vexdou_visitor or request.headers.get("x-quickdl-visitor"):
-        _set_visitor_cookie(out, visitor)
+    _set_visitor_cookie(out, visitor)
     return out
 
 @app.get("/api/download/{job}")
@@ -1264,12 +1289,14 @@ def api_account(request: Request, vexdou_visitor: str | None = Cookie(default=No
     try:
         data = account_payload(visitor)
     except Exception as exc:
-        diagnostic_id = uuid.uuid4().hex[:12]
-        log.exception("account bootstrap failed id=%s visitor=%s", diagnostic_id, visitor)
-        raise HTTPException(503, f"Account service is temporarily unavailable. Please try again. Reference: {diagnostic_id}") from exc
+        ref = uuid.uuid4().hex[:12]
+        log.exception("account bootstrap failed ref=%s visitor=%s", ref, visitor)
+        record_app_error(ref, request, exc, 503)
+        raise HTTPException(503, {"code":"ACCOUNT_UNAVAILABLE","message":"Something went wrong. Please try again.","reference":ref}) from exc
     out = JSONResponse({"ok":True, **data}, headers={"Cache-Control":"no-store"})
-    if not vexdou_visitor or request.headers.get("x-quickdl-visitor"):
-        _set_visitor_cookie(out, visitor)
+    # Always refresh the authoritative cookie. This also repairs malformed/legacy
+    # cookies from older QuickDL deployments.
+    _set_visitor_cookie(out, visitor)
     return out
 
 @app.get("/api/credits/packages")
@@ -1295,14 +1322,10 @@ def credits_health(request: Request, vexdou_visitor: str | None = Cookie(default
         account = ensure_credit_account(db, visitor)
         payload = {
             "ok": True,
-            "has_cookie": bool(vexdou_visitor),
-            "header_fallback": bool(request.headers.get("x-quickdl-visitor")),
-            "visitor_id_length": len(visitor),
             "user_code": account.user_code,
             "credits": credit_balance(account),
             "unlimited": bool(getattr(account, "unlimited", False)),
             "month": account.month_key,
-            "db": engine.dialect.name,
         }
         db.commit()
         out = JSONResponse(payload)
@@ -1312,11 +1335,14 @@ def credits_health(request: Request, vexdou_visitor: str | None = Cookie(default
     except Exception as exc:
         db.rollback()
         log.exception("credit health failed visitor=%s", visitor)
-        return JSONResponse(status_code=500, content={
+        ref = uuid.uuid4().hex[:12]
+        log.exception("credit health failed ref=%s visitor=%s", ref, visitor)
+        record_app_error(ref, request, exc, 503)
+        return JSONResponse(status_code=503, content={
             "ok": False,
-            "error": "credit_account_initialization_failed",
-            "message": str(exc)[:500],
-            "db": engine.dialect.name,
+            "error": "credit_account_unavailable",
+            "message": "Something went wrong. Please try again.",
+            "reference": ref,
         })
     finally:
         db.close()
@@ -1499,10 +1525,10 @@ def send_auth_email(to_email,subject,title,intro,code,label):
         _send_html_email(to_email,subject,html,f"{title}\n\n{intro}\n\n{label}: {code}\nExpires in {AUTH_CODE_MINUTES} minutes.")
     except Exception as exc:
         log.exception("email send failed to=%s",to_email)
-        # Surface a useful, non-secret provider diagnostic instead of hiding the
-        # actual Resend rejection behind a generic SMTP message.
-        msg=str(exc)[:700]
-        raise HTTPException(502, f"Email delivery failed: {msg}") from exc
+        # Keep provider/hosting diagnostics out of the user-facing response.
+        ref = uuid.uuid4().hex[:12]
+        log.error("auth email delivery failed ref=%s to=%s: %s", ref, to_email, exc, exc_info=True)
+        raise HTTPException(502, {"code":"EMAIL_DELIVERY_FAILED","message":"We could not send the email right now. Please try again.","reference":ref}) from exc
 
 def send_welcome_email(to_email,name,user_code,method="email"):
 
@@ -2004,9 +2030,12 @@ def admin_email_health(request: Request):
 
 @app.get("/api/email/health")
 def public_email_health():
-    """Safe deployment diagnostic; never returns API keys or mailbox passwords."""
-    h=smtp_health()
-    return {k:h.get(k) for k in ("ok","provider","active_provider","resend_configured","http_status","error") if k in h}
+    """Public health check without provider, hosting, or configuration details."""
+    try:
+        h=smtp_health()
+        return {"ok": bool(h.get("ok")), "message": "Email service is ready." if h.get("ok") else "Email service is temporarily unavailable."}
+    except Exception:
+        return {"ok":False,"message":"Email service is temporarily unavailable."}
 
 @app.get("/admin18", response_class=HTMLResponse)
 def admin_page(request: Request):
@@ -2068,7 +2097,7 @@ def admin_overview(request: Request):
             status[r.status] = status.get(r.status, 0) + 1
             p = platform(r.url); plats[p] = plats.get(p, 0) + 1
         users = len({r.visitor_id for r in rows})
-        return {"version":"25.0.0-admin", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
+        return {"version":"27.0.0-admin", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
     finally: db.close()
 
 @app.get("/api/admin/users")
@@ -2099,9 +2128,15 @@ def admin_downloads(request: Request, status: str = "", limit: int = 200):
 
 @app.get("/api/admin/errors")
 def admin_errors(request: Request, limit: int = 100):
-    require_admin(request); db=Session()
+    require_admin(request); db=Session(); limit=max(1,min(limit,300))
     try:
-        rows=db.scalars(select(Download).where(Download.status=="failed").order_by(Download.created_at.desc()).limit(max(1,min(limit,300)))).all(); return {"items":[{"job_id":r.job_id,"platform":platform(r.url),"error":r.error or "Unknown error","url":r.url,"created_at":r.created_at.isoformat() if r.created_at else None} for r in rows]}
+        items=[]
+        for r in db.scalars(select(AppError).order_by(AppError.created_at.desc()).limit(limit)).all():
+            items.append({"reference":r.reference,"type":"application","method":r.method,"path":r.path,"status":r.status,"error":r.message,"error_type":r.error_type,"created_at":r.created_at.isoformat() if r.created_at else None})
+        for r in db.scalars(select(Download).where(Download.status=="failed").order_by(Download.created_at.desc()).limit(limit)).all():
+            items.append({"reference":r.job_id,"type":"download","method":"WORKER","path":r.url,"status":500,"error":r.error or "Download failed","error_type":"DownloadError","created_at":r.created_at.isoformat() if r.created_at else None})
+        items.sort(key=lambda x:x.get("created_at") or "", reverse=True)
+        return {"items":items[:limit]}
     finally: db.close()
 
 @app.get("/api/admin/audit")
