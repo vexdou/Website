@@ -1,52 +1,23 @@
-# QuickDL v19
+# QuickDL v21
 
-Production-oriented public-media downloader with a persistent browser account, 10-digit User IDs, credits, PayPal Live checkout, Google Sign-In controls, support messages, and admin controls.
+Production-oriented QuickDL build for Render + PostgreSQL.
 
-## Important deployment settings
+## Included in v21
+- Public media downloader using yt-dlp with YouTube client fallbacks and FFmpeg/Node support.
+- 50 monthly free credits by default; 2 credits per video.
+- Stable 10-digit QuickDL User ID, now opened through a dedicated **Get ID** button instead of displaying the ID beside Sign in.
+- Google Sign-In using Google Identity Services and server-side ID-token verification.
+- First Google sign-in can send a polished welcome email from `support@quickdl.site`.
+- Email signup, verification, login, forgot-password and reset-password flows.
+- Spacemail SMTP support with a 465/587 delivery fallback and admin SMTP health check.
+- PayPal Live credit purchases with server-side Orders v2 create/capture and webhook verification.
+- Admin credit management by the user's 10-digit User ID: add, remove, unlimited, reset, view.
+- Admin Ads Manager plus public-config driven promotional card.
+- Downloader worker diagnostics and job counters.
+- Admin download retry/delete/error center.
 
-```env
-DATABASE_URL=postgresql://...
-ADMIN_PASSWORD=...
-ADMIN_SESSION_SECRET=...
-MONTHLY_FREE_CREDITS=50
-VIDEO_CREDIT_COST=2
-MAX_CONCURRENT_JOBS=2
-COOKIE_SECURE=true
+## Render environment
+Set the values from `.env.example` in Render Environment Variables. Never commit PayPal client secrets, SMTP passwords, or admin secrets.
 
-PAYPAL_MODE=live
-PAYPAL_CLIENT_ID=...
-PAYPAL_CLIENT_SECRET=...
-PAYPAL_CURRENCY=USD
-PAYPAL_DOMAIN=https://quickdl.site
-PAYPAL_WEBHOOK_ID=...
-
-GOOGLE_CLIENT_ID=YOUR_GOOGLE_WEB_CLIENT_ID
-```
-
-### Google Sign-In
-
-Create a Google OAuth/Web client and add `https://quickdl.site` as an Authorized JavaScript origin. Put the Web Client ID in `GOOGLE_CLIENT_ID`.
-
-Admin controls are under **Settings → Google Login Control**:
-- **Open Login**: new visitors can connect Google.
-- **Close Login**: hides Google login for new visitors; already-linked Google accounts can still connect.
-
-### Stable User ID
-
-Each browser gets a first-party `vexdou_visitor` cookie valid for one year. The same opaque visitor token is also kept as a browser fallback so refreshes do not create a new account. The account receives one permanent 10-digit User ID stored in PostgreSQL.
-
-### Credits
-
-- 50 free credits/month by default.
-- 2 credits per video by default.
-- Free credits are used before purchased credits.
-- Purchased credits do not expire.
-- Admin can add/remove any number of credits and enable/disable Unlimited per user.
-
-### Support
-
-Users can use `/contact`; messages appear in **Admin → Messages**.
-
-### Public-media limitation
-
-The downloader is for publicly accessible media. It does not bypass private accounts, DRM, CAPTCHA, login/access controls, or other access restrictions.
+## Important
+QuickDL only supports public media and does not bypass private accounts, DRM, CAPTCHAs, or login restrictions.

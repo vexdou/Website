@@ -1,5 +1,4 @@
-import os, re, time, uuid, mimetypes, logging, threading, ipaddress, socket, shutil, json, secrets, smtplib, ssl, hashlib, hmac, base64
-from email.message import EmailMessage
+import os, re, time, uuid, mimetypes, logging, threading, ipaddress, socket, shutil, json, secrets
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse, urljoin, parse_qs
@@ -72,15 +71,6 @@ class CreditAccount(Base):
     google_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     google_picture: Mapped[str | None] = mapped_column(Text, nullable=True)
     google_linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    google_welcome_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    email: Mapped[str | None] = mapped_column(String(320), nullable=True, index=True)
-    auth_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
-    email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
-    email_code_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    email_code_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    reset_code_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    reset_code_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 class CreditTransaction(Base):
     __tablename__ = "credit_transactions"
@@ -136,15 +126,6 @@ def migrate_credit_columns():
                 ("credit_accounts", "google_name", "VARCHAR(200)"),
                 ("credit_accounts", "google_picture", "TEXT"),
                 ("credit_accounts", "google_linked_at", "TIMESTAMPTZ"),
-                ("credit_accounts", "google_welcome_sent_at", "TIMESTAMPTZ"),
-                ("credit_accounts", "email", "VARCHAR(320)"),
-                ("credit_accounts", "auth_name", "VARCHAR(200)"),
-                ("credit_accounts", "password_hash", "TEXT"),
-                ("credit_accounts", "email_verified", "BOOLEAN NOT NULL DEFAULT FALSE"),
-                ("credit_accounts", "email_code_hash", "VARCHAR(128)"),
-                ("credit_accounts", "email_code_expires_at", "TIMESTAMPTZ"),
-                ("credit_accounts", "reset_code_hash", "VARCHAR(128)"),
-                ("credit_accounts", "reset_code_expires_at", "TIMESTAMPTZ"),
                 ("credit_transactions", "visitor_id", "VARCHAR(128)"),
                 ("credit_transactions", "tx_type", "VARCHAR(40) DEFAULT 'adjustment'"),
                 ("credit_transactions", "credits", "INTEGER NOT NULL DEFAULT 0"),
@@ -180,7 +161,6 @@ def migrate_credit_columns():
                 "CREATE INDEX IF NOT EXISTS ix_credit_accounts_user_code ON credit_accounts(user_code)",
                 "CREATE INDEX IF NOT EXISTS ix_credit_transactions_visitor_id ON credit_transactions(visitor_id)",
                 "CREATE INDEX IF NOT EXISTS ix_paypal_orders_visitor_id ON paypal_orders(visitor_id)",
-                "CREATE INDEX IF NOT EXISTS ix_credit_accounts_email ON credit_accounts(email)",
             ]:
                 try:
                     with engine.begin() as conn: conn.execute(text(stmt))
@@ -188,7 +168,7 @@ def migrate_credit_columns():
         elif dialect == "sqlite":
             with engine.begin() as conn:
                 for table, fields in {
-                    "credit_accounts": {"visitor_id":"TEXT", "user_code":"TEXT", "free_credits":"INTEGER NOT NULL DEFAULT 50", "purchased_credits":"INTEGER NOT NULL DEFAULT 0", "month_key":"TEXT NOT NULL DEFAULT ''", "created_at":"DATETIME", "updated_at":"DATETIME", "unlimited":"INTEGER NOT NULL DEFAULT 0", "google_sub":"TEXT", "google_email":"TEXT", "google_name":"TEXT", "google_picture":"TEXT", "google_linked_at":"DATETIME", "google_welcome_sent_at":"DATETIME", "email":"TEXT", "auth_name":"TEXT", "password_hash":"TEXT", "email_verified":"INTEGER NOT NULL DEFAULT 0", "email_code_hash":"TEXT", "email_code_expires_at":"DATETIME", "reset_code_hash":"TEXT", "reset_code_expires_at":"DATETIME"},
+                    "credit_accounts": {"visitor_id":"TEXT", "user_code":"TEXT", "free_credits":"INTEGER NOT NULL DEFAULT 50", "purchased_credits":"INTEGER NOT NULL DEFAULT 0", "month_key":"TEXT NOT NULL DEFAULT ''", "created_at":"DATETIME", "updated_at":"DATETIME", "unlimited":"INTEGER NOT NULL DEFAULT 0", "google_sub":"TEXT", "google_email":"TEXT", "google_name":"TEXT", "google_picture":"TEXT", "google_linked_at":"DATETIME"},
                     "credit_transactions": {"visitor_id":"TEXT", "tx_type":"TEXT DEFAULT 'adjustment'", "credits":"INTEGER NOT NULL DEFAULT 0", "amount":"TEXT", "currency":"TEXT", "package_id":"TEXT", "paypal_order_id":"TEXT", "paypal_capture_id":"TEXT", "status":"TEXT DEFAULT 'completed'", "note":"TEXT", "created_at":"DATETIME"},
                     "paypal_orders": {"order_id":"TEXT", "visitor_id":"TEXT", "package_id":"TEXT", "credits":"INTEGER DEFAULT 0", "amount":"TEXT DEFAULT '0.00'", "currency":"TEXT DEFAULT 'USD'", "status":"TEXT DEFAULT 'created'", "capture_id":"TEXT", "created_at":"DATETIME", "captured_at":"DATETIME"},
                 }.items():
@@ -245,14 +225,8 @@ PAYPAL_CURRENCY = os.getenv("PAYPAL_CURRENCY", "USD").strip().upper()
 PAYPAL_DOMAIN = os.getenv("PAYPAL_DOMAIN", "").strip()
 PAYPAL_WEBHOOK_ID = os.getenv("PAYPAL_WEBHOOK_ID", "").strip()
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
-SMTP_HOST = os.getenv("SMTP_HOST", "mail.spacemail.com").strip()
-SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
-SMTP_USER = os.getenv("SMTP_USER", os.getenv("SPACEMAIL_USER", "support@quickdl.site")).strip()
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", os.getenv("SPACEMAIL_PASSWORD", "")).strip()
-EMAIL_FROM = os.getenv("EMAIL_FROM", "QuickDL <support@quickdl.site>").strip()
-AUTH_CODE_MINUTES = max(5, int(os.getenv("AUTH_CODE_MINUTES", "10")))
 PAYPAL_TOKEN_CACHE = {"token": None, "expires_at": 0}
-WORKER_HEARTBEAT = {"started_at": None, "last_loop": None, "last_job": None, "last_error": None, "jobs_completed": 0, "jobs_failed": 0}
+WORKER_HEARTBEAT = {"started_at": None, "last_loop": None, "last_job": None}
 CREDIT_PACKAGES = {
     "starter": {"name": "Starter", "credits": 100, "price": "1.99", "badge": ""},
     "popular": {"name": "Popular", "credits": 500, "price": "6.99", "badge": "Most popular"},
@@ -275,33 +249,16 @@ def ensure_credit_account(db, visitor_id):
     now = datetime.now(timezone.utc)
     account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
     if not account:
-        for _ in range(8):
-            candidate = CreditAccount(visitor_id=visitor_id, user_code=make_user_code(db), free_credits=monthly_free, purchased_credits=0, month_key=month, created_at=now, updated_at=now, unlimited=False)
-            try:
-                with db.begin_nested():
-                    db.add(candidate)
-                    db.flush()
-                account = candidate
-                break
-            except IntegrityError:
-                account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
-                if account:
-                    break
-        if not account:
-            raise RuntimeError("Could not create a stable QuickDL credit account")
+        account = CreditAccount(visitor_id=visitor_id, user_code=make_user_code(db), free_credits=monthly_free, purchased_credits=0, month_key=month, created_at=now, updated_at=now, unlimited=False)
+        db.add(account)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
+            if not account: raise
     if not account.user_code:
-        assigned = False
-        for _ in range(8):
-            try:
-                with db.begin_nested():
-                    account.user_code = make_user_code(db)
-                    db.flush()
-                assigned = True
-                break
-            except IntegrityError:
-                db.refresh(account)
-        if not assigned:
-            raise RuntimeError("Could not assign a stable QuickDL user ID")
+        account.user_code = make_user_code(db)
     if account.month_key != month:
         account.free_credits = monthly_free
         account.month_key = month
@@ -362,7 +319,7 @@ def account_payload(visitor_id):
     try:
         account = ensure_credit_account(db, visitor_id)
         db.commit()
-        return {"visitor_id": visitor_id, "user_code": account.user_code, "free_credits": account.free_credits, "purchased_credits": account.purchased_credits, "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS), "video_cost": int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST), "month": account.month_key, "google": bool(account.google_sub), "google_email": account.google_email, "google_name": account.google_name, "google_picture": account.google_picture, "email": account.email, "email_verified": bool(getattr(account, "email_verified", False)), "auth_name": account.auth_name, "authenticated": bool(account.google_sub or account.email_verified), "display_name": account.google_name or account.auth_name or account.google_email or account.email}
+        return {"visitor_id": visitor_id, "user_code": account.user_code, "free_credits": account.free_credits, "purchased_credits": account.purchased_credits, "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS), "video_cost": int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST), "month": account.month_key, "google": bool(account.google_sub), "google_email": account.google_email, "google_name": account.google_name, "google_picture": account.google_picture}
     finally:
         db.close()
 
@@ -730,7 +687,6 @@ def mark_failed(job, error):
     finally:
         db.close()
     if visitor and not already_failed:
-        WORKER_HEARTBEAT["jobs_failed"] += 1
         try: refund_download_credits(visitor, job, int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST))
         except Exception: log.exception("Could not refund credits for failed job %s", job)
 
@@ -898,10 +854,8 @@ def worker_loop():
             if item:
                 WORKER_HEARTBEAT["last_job"] = item[0]
                 process(*item)
-                WORKER_HEARTBEAT["jobs_completed"] += 1
             else: time.sleep(float(os.getenv("WORKER_POLL_SECONDS", "0.7")))
-        except Exception as exc:
-            WORKER_HEARTBEAT["last_error"] = f"{type(exc).__name__}: {exc}"[:500]
+        except Exception:
             log.exception("worker error"); time.sleep(2)
 
 @asynccontextmanager
@@ -909,7 +863,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="21.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="19.0.0", lifespan=lifespan)
 
 @app.exception_handler(Exception)
 async def unhandled_exception(request: Request, exc: Exception):
@@ -920,9 +874,9 @@ def _cookie_secure():
     return os.getenv("COOKIE_SECURE", "true").lower() in {"1","true","yes","on"}
 
 def _visitor_from(request: Request, cookie_value: str | None = None):
-    # First-party cookie is authoritative; localStorage header is only a fallback.
-    value = (cookie_value or request.headers.get("x-quickdl-visitor") or "").strip()
-    return value if re.fullmatch(r"[a-f0-9]{32}", value) else uuid.uuid4().hex
+    # Cookie is authoritative; X-QuickDL-Visitor is a fallback for browsers that
+    # block third-party/partitioned cookies. The value is an opaque random token.
+    return cookie_value or request.headers.get("x-quickdl-visitor") or uuid.uuid4().hex
 
 def _set_visitor_cookie(response, visitor):
     response.set_cookie("vexdou_visitor", visitor, max_age=31536000, httponly=True, samesite="lax", secure=_cookie_secure(), path="/")
@@ -949,14 +903,14 @@ def sw(): return FileResponse(BASE / "sw.js", media_type="application/javascript
 
 @app.get("/api/public-config")
 def public_config():
-    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance"),"credits_enabled":True,"monthly_free":int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS),"video_cost":int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST),"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET),"paypal_mode":PAYPAL_MODE,"paypal_client_id":PAYPAL_CLIENT_ID,"currency":PAYPAL_CURRENCY,"google_login_enabled":setting_bool("google_login_enabled"),"google_client_id":GOOGLE_CLIENT_ID,"login_enabled":setting_bool("login_enabled"),"email_auth_configured":bool(SMTP_PASSWORD),"ads_enabled":setting_bool("ads_enabled"),"ads_text":setting_get("ads_text"),"ads_url":setting_get("ads_url"),"ads_button_text":setting_get("ads_button_text")}
+    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance"),"credits_enabled":True,"monthly_free":int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS),"video_cost":int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST),"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET),"paypal_mode":PAYPAL_MODE,"paypal_client_id":PAYPAL_CLIENT_ID,"currency":PAYPAL_CURRENCY,"google_login_enabled":setting_bool("google_login_enabled"),"google_client_id":GOOGLE_CLIENT_ID}
 
 @app.get("/api/health")
 def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "21.0.0", "worker": WORKER_HEARTBEAT}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "19.0.0", "worker": WORKER_HEARTBEAT}
     finally: db.close()
 
 class DownloadRequest(BaseModel):
@@ -1160,193 +1114,6 @@ def credits_health(request: Request, vexdou_visitor: str | None = Cookie(default
     finally:
         db.close()
 
-# --- Email authentication ---
-class EmailSignupRequest(BaseModel):
-    email: str
-    password: str
-    name: str = ""
-
-class EmailCodeRequest(BaseModel):
-    email: str
-    code: str
-
-class EmailLoginRequest(BaseModel):
-    email: str
-    password: str
-
-class ForgotPasswordRequest(BaseModel):
-    email: str
-
-class ResetPasswordRequest(BaseModel):
-    email: str
-    code: str
-    password: str
-
-def normalize_email(value):
-    email=(value or "").strip().lower()
-    if not re.fullmatch(r"[^@\s]{1,200}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}",email):
-        raise HTTPException(400,"Please enter a valid email address.")
-    return email
-
-def password_hash(password):
-    if len(password or "")<8: raise HTTPException(400,"Password must be at least 8 characters.")
-    salt=secrets.token_bytes(16)
-    digest=hashlib.scrypt(password.encode(),salt=salt,n=2**14,r=8,p=1)
-    return "scrypt$16384$8$1$"+base64.urlsafe_b64encode(salt).decode().rstrip("=")+"$"+base64.urlsafe_b64encode(digest).decode().rstrip("=")
-
-def password_ok(password,stored):
-    try:
-        scheme,n,r,p,salt_b64,digest_b64=stored.split("$")
-        if scheme!="scrypt": return False
-        salt=base64.urlsafe_b64decode(salt_b64+"==="); expected=base64.urlsafe_b64decode(digest_b64+"===")
-        got=hashlib.scrypt(password.encode(),salt=salt,n=int(n),r=int(r),p=int(p))
-        return hmac.compare_digest(got,expected)
-    except Exception: return False
-
-def code_hash(code): return hashlib.sha256(code.encode()).hexdigest()
-def make_code(): return f"{secrets.randbelow(1000000):06d}"
-
-def _email_sender_parts():
-    # Supports `Display Name <mailbox@domain>` and a plain mailbox.
-    m=re.fullmatch(r"\s*(.*?)\s*<([^<>@\s]+@[^<>@\s]+)>\s*", EMAIL_FROM)
-    if m:
-        return m.group(1).strip() or "QuickDL", m.group(2).strip()
-    return "QuickDL", EMAIL_FROM
-
-def _send_html_email(to_email, subject, html, text_body=None):
-    if not SMTP_PASSWORD:
-        raise RuntimeError("SMTP_PASSWORD is missing")
-    msg=EmailMessage()
-    display, sender=_email_sender_parts()
-    msg["From"]=f"{display} <{sender}>"
-    msg["To"]=to_email
-    msg["Subject"]=subject
-    msg.set_content(text_body or "This message contains HTML content. Please open it in an HTML-capable mail client.")
-    msg.add_alternative(html, subtype="html")
-
-    ports=[]
-    configured=SMTP_PORT
-    for port in ([configured,587] if configured==465 else [configured,465]):
-        if port not in ports: ports.append(port)
-    last=None
-    for port in ports:
-        try:
-            ctx=ssl.create_default_context()
-            if port==465:
-                with smtplib.SMTP_SSL(SMTP_HOST,port,context=ctx,timeout=25) as smtp:
-                    smtp.ehlo(); smtp.login(SMTP_USER,SMTP_PASSWORD); smtp.send_message(msg)
-            else:
-                with smtplib.SMTP(SMTP_HOST,port,timeout=25) as smtp:
-                    smtp.ehlo(); smtp.starttls(context=ctx); smtp.ehlo(); smtp.login(SMTP_USER,SMTP_PASSWORD); smtp.send_message(msg)
-            log.info("email delivered host=%s port=%s to=%s subject=%s", SMTP_HOST,port,to_email,subject)
-            return
-        except (smtplib.SMTPAuthenticationError, smtplib.SMTPRecipientsRefused) as exc:
-            last=exc
-            # Authentication/recipient errors are deterministic; do not retry another TLS mode.
-            break
-        except Exception as exc:
-            last=exc
-            log.warning("SMTP attempt failed host=%s port=%s: %s", SMTP_HOST,port,exc)
-    raise RuntimeError(f"SMTP delivery failed: {type(last).__name__}: {last}")
-
-def smtp_health():
-    if not SMTP_PASSWORD:
-        return {"configured":False,"ok":False,"host":SMTP_HOST,"port":SMTP_PORT,"user":SMTP_USER,"error":"SMTP_PASSWORD is missing"}
-    try:
-        ctx=ssl.create_default_context()
-        if SMTP_PORT==465:
-            with smtplib.SMTP_SSL(SMTP_HOST,SMTP_PORT,context=ctx,timeout=15) as smtp:
-                smtp.ehlo(); smtp.login(SMTP_USER,SMTP_PASSWORD)
-        else:
-            with smtplib.SMTP(SMTP_HOST,SMTP_PORT,timeout=15) as smtp:
-                smtp.ehlo(); smtp.starttls(context=ctx); smtp.ehlo(); smtp.login(SMTP_USER,SMTP_PASSWORD)
-        return {"configured":True,"ok":True,"host":SMTP_HOST,"port":SMTP_PORT,"user":SMTP_USER}
-    except Exception as exc:
-        log.exception("SMTP health check failed")
-        return {"configured":True,"ok":False,"host":SMTP_HOST,"port":SMTP_PORT,"user":SMTP_USER,"error":f"{type(exc).__name__}: {exc}"[:500]}
-
-def _safe_html(value):
-    return (value or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace('"',"&quot;")
-
-def send_auth_email(to_email,subject,title,intro,code,label):
-    html="""<!doctype html><html><body style='margin:0;background:#f4f6fb;font-family:Arial,sans-serif;color:#151925'><div style='max-width:560px;margin:40px auto;background:#fff;border:1px solid #e7e9ef;border-radius:22px;overflow:hidden'><div style='padding:24px 28px;background:#101321;color:#fff'><div style='font-size:25px;font-weight:900'>Quick<span style='color:#7c6cff'>DL</span></div></div><div style='padding:30px'><h1 style='margin:0 0 10px;font-size:25px'>%s</h1><p style='color:#687083;line-height:1.6'>%s</p><div style='margin:24px 0;padding:20px;text-align:center;border-radius:16px;background:#f3f2ff'><div style='font-size:11px;color:#73798a;text-transform:uppercase;font-weight:800'>%s</div><div style='font-size:34px;letter-spacing:8px;font-weight:900;color:#5d54dc;margin-top:8px'>%s</div></div><p style='font-size:12px;color:#8a90a0'>This code expires in %s minutes. If you did not request this, you can safely ignore this email.</p></div></div></body></html>""" % (_safe_html(title),_safe_html(intro),_safe_html(label),_safe_html(code),AUTH_CODE_MINUTES)
-    try:
-        _send_html_email(to_email,subject,html,f"{title}\n\n{intro}\n\n{label}: {code}\nExpires in {AUTH_CODE_MINUTES} minutes.")
-    except Exception as exc:
-        log.exception("email send failed to=%s",to_email)
-        raise HTTPException(502,"We could not send the email right now. Check the Spacemail SMTP settings in Render.") from exc
-
-def send_google_welcome_email(to_email,name,user_code):
-    safe_name=_safe_html(name or "there")
-    safe_code=_safe_html(user_code)
-    html=f"""<!doctype html><html><body style='margin:0;background:#f4f6fb;font-family:Arial,sans-serif;color:#151925'><div style='max-width:620px;margin:36px auto;background:#fff;border:1px solid #e7e9ef;border-radius:24px;overflow:hidden'><div style='padding:30px;background:linear-gradient(135deg,#101321,#29224d);color:#fff'><div style='font-size:28px;font-weight:900'>Quick<span style='color:#8f82ff'>DL</span></div><div style='margin-top:8px;color:#cbd0e2;font-size:13px'>Your public-media workspace is ready.</div></div><div style='padding:32px'><div style='font-size:13px;color:#6b7280'>WELCOME TO QUICKDL</div><h1 style='margin:8px 0 12px;font-size:30px'>Welcome, {safe_name}! 👋</h1><p style='color:#687083;line-height:1.7'>Your Google account has been connected successfully. You can now use QuickDL with your account identity and keep your downloads and credit balance associated with your account.</p><div style='margin:22px 0;padding:18px 20px;border-radius:16px;background:#f3f2ff;border:1px solid #e4e0ff'><div style='font-size:11px;color:#73798a;font-weight:800'>YOUR QUICKDL USER ID</div><div style='font-size:30px;letter-spacing:5px;font-weight:900;color:#5d54dc;margin-top:6px'>{safe_code}</div></div><p style='font-size:12px;color:#8a90a0;line-height:1.6'>Keep this User ID if you ever need support. QuickDL will never ask you for your Google password.</p></div></div></body></html>"""
-    _send_html_email(to_email,"Welcome to QuickDL — your account is ready",html,f"Welcome to QuickDL, {name or 'there'}! Your account is connected. Your User ID is {user_code}.")
-
-def login_enabled(): return setting_bool("login_enabled")
-
-@app.post("/api/auth/signup/request")
-def email_signup_request(data: EmailSignupRequest, request: Request, vexdou_visitor: str | None=Cookie(default=None)):
-    if not login_enabled(): raise HTTPException(403,"Login is currently closed for new users.")
-    email=normalize_email(data.email); visitor=_visitor_from(request,vexdou_visitor)
-    if len(data.password)<8: raise HTTPException(400,"Password must be at least 8 characters.")
-    db=Session()
-    try:
-        existing=db.scalar(select(CreditAccount).where(CreditAccount.email==email).with_for_update())
-        if existing and existing.email_verified: raise HTTPException(409,"An account with this email already exists. Please log in or use Forgot password.")
-        account=existing or ensure_credit_account(db,visitor)
-        if existing and existing.visitor_id!=visitor:
-            target=existing
-        else: target=account
-        code=make_code(); target.email=email; target.auth_name=(data.name or email.split("@")[0])[:200]; target.password_hash=password_hash(data.password); target.email_verified=False; target.email_code_hash=code_hash(code); target.email_code_expires_at=datetime.fromtimestamp(time.time()+AUTH_CODE_MINUTES*60,timezone.utc); target.updated_at=datetime.now(timezone.utc); db.commit()
-        send_auth_email(email,"Your QuickDL verification code","Verify your QuickDL account","Use the code below to verify your email address and finish creating your account.",code,"Email verification code")
-        out=JSONResponse({"ok":True,"message":"Verification code sent to your email."}); _set_visitor_cookie(out,target.visitor_id); return out
-    finally: db.close()
-
-@app.post("/api/auth/signup/verify")
-def email_signup_verify(data: EmailCodeRequest, request: Request, vexdou_visitor: str | None=Cookie(default=None)):
-    email=normalize_email(data.email); code=(data.code or "").strip()
-    if not re.fullmatch(r"\d{6}",code): raise HTTPException(400,"Enter the 6-digit verification code.")
-    db=Session()
-    try:
-        account=db.scalar(select(CreditAccount).where(CreditAccount.email==email).with_for_update())
-        if not account: raise HTTPException(404,"Signup session not found. Please request a new code.")
-        if account.email_verified: raise HTTPException(409,"This email is already verified. Please log in.")
-        if not account.email_code_expires_at or account.email_code_expires_at<datetime.now(timezone.utc) or not hmac.compare_digest(account.email_code_hash or "",code_hash(code)): raise HTTPException(400,"The code is invalid or expired.")
-        account.email_verified=True; account.email_code_hash=None; account.email_code_expires_at=None; account.updated_at=datetime.now(timezone.utc); db.commit()
-        out=JSONResponse({"ok":True,**account_payload(account.visitor_id)}); _set_visitor_cookie(out,account.visitor_id); return out
-    finally: db.close()
-
-@app.post("/api/auth/login")
-def email_login(data: EmailLoginRequest, request: Request, vexdou_visitor: str | None=Cookie(default=None)):
-    email=normalize_email(data.email); db=Session()
-    try:
-        account=db.scalar(select(CreditAccount).where(CreditAccount.email==email).with_for_update())
-        if not account or not account.password_hash or not account.email_verified or not password_ok(data.password,account.password_hash): raise HTTPException(401,"Email or password is incorrect.")
-        db.commit(); out=JSONResponse({"ok":True,**account_payload(account.visitor_id)}); _set_visitor_cookie(out,account.visitor_id); return out
-    finally: db.close()
-
-@app.post("/api/auth/forgot")
-def forgot_password(data: ForgotPasswordRequest):
-    email=normalize_email(data.email); db=Session()
-    try:
-        account=db.scalar(select(CreditAccount).where(CreditAccount.email==email).with_for_update())
-        if account and account.email_verified:
-            code=make_code(); account.reset_code_hash=code_hash(code); account.reset_code_expires_at=datetime.fromtimestamp(time.time()+AUTH_CODE_MINUTES*60,timezone.utc); db.commit(); send_auth_email(email,"Reset your QuickDL password","Password reset code","Use this code to choose a new QuickDL password.",code,"Password reset code")
-        else: db.commit()
-        return {"ok":True,"message":"If that email has a QuickDL account, a reset code has been sent."}
-    finally: db.close()
-
-@app.post("/api/auth/reset")
-def reset_password(data: ResetPasswordRequest, request: Request):
-    email=normalize_email(data.email); code=(data.code or "").strip()
-    if not re.fullmatch(r"\d{6}",code): raise HTTPException(400,"Enter the 6-digit reset code.")
-    new_hash=password_hash(data.password); db=Session()
-    try:
-        account=db.scalar(select(CreditAccount).where(CreditAccount.email==email).with_for_update())
-        if not account or not account.reset_code_expires_at or account.reset_code_expires_at<datetime.now(timezone.utc) or not hmac.compare_digest(account.reset_code_hash or "",code_hash(code)): raise HTTPException(400,"The reset code is invalid or expired.")
-        account.password_hash=new_hash; account.reset_code_hash=None; account.reset_code_expires_at=None; account.updated_at=datetime.now(timezone.utc); db.commit(); out=JSONResponse({"ok":True,**account_payload(account.visitor_id)}); _set_visitor_cookie(out,account.visitor_id); return out
-    finally: db.close()
-
 class GoogleLoginRequest(BaseModel):
     credential: str
 
@@ -1388,46 +1155,18 @@ def google_login(data: GoogleLoginRequest, request: Request, vexdou_visitor: str
             if current.purchased_credits:
                 target.purchased_credits += current.purchased_credits
                 current.purchased_credits = 0
-            first_google_login = not bool(target.google_sub)
             target.google_sub=sub; target.google_email=email; target.google_name=name; target.google_picture=picture; target.google_linked_at=datetime.now(timezone.utc)
             db.commit()
-            if first_google_login and not target.google_welcome_sent_at and SMTP_PASSWORD:
-                try:
-                    send_google_welcome_email(email,name,target.user_code)
-                    db2=Session()
-                    try:
-                        fresh=db2.get(CreditAccount,target.id)
-                        if fresh:
-                            fresh.google_welcome_sent_at=datetime.now(timezone.utc); db2.commit()
-                    finally:
-                        db2.close()
-                except Exception:
-                    log.exception("Google welcome email failed for %s", email)
             payload=account_payload(target.visitor_id)
-            out=JSONResponse({"ok":True,"linked":True,"message":"Google account connected.","welcome_email_sent":bool(target.google_welcome_sent_at),**payload})
+            out=JSONResponse({"ok":True,"linked":True,"message":"Google account connected.",**payload})
             _set_visitor_cookie(out,target.visitor_id)
             return out
         if not login_open and not current.google_sub:
             raise HTTPException(403, "Google Login is currently closed for new users.")
-        first_google_login = not bool(current.google_sub)
         current.google_sub=sub; current.google_email=email; current.google_name=name; current.google_picture=picture; current.google_linked_at=datetime.now(timezone.utc); current.updated_at=datetime.now(timezone.utc)
         db.commit()
-        if first_google_login and not current.google_welcome_sent_at and SMTP_PASSWORD:
-            try:
-                send_google_welcome_email(email,name,current.user_code)
-                db2=Session()
-                try:
-                    fresh=db2.get(CreditAccount,current.id)
-                    if fresh:
-                        fresh.google_welcome_sent_at=datetime.now(timezone.utc)
-                        db2.commit()
-                finally:
-                    db2.close()
-            except Exception:
-                # Login must never fail just because an optional welcome email failed.
-                log.exception("Google welcome email failed for %s", email)
         payload=account_payload(current.visitor_id)
-        out=JSONResponse({"ok":True,"linked":True,"message":"Google account connected.","welcome_email_sent":bool(current.google_welcome_sent_at),**payload})
+        out=JSONResponse({"ok":True,"linked":True,"message":"Google account connected.",**payload})
         _set_visitor_cookie(out,current.visitor_id)
         return out
     finally:
@@ -1621,11 +1360,6 @@ DEFAULT_SETTINGS = {
     "monthly_free_credits": str(MONTHLY_FREE_CREDITS),
     "video_credit_cost": str(VIDEO_CREDIT_COST),
     "google_login_enabled": "false",
-    "login_enabled": "false",
-    "ads_enabled": "false",
-    "ads_text": "",
-    "ads_url": "",
-    "ads_button_text": "Learn more",
 }
 
 def setting_get(key):
@@ -1702,15 +1436,9 @@ def admin_system(request: Request):
             "paypal_configured":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET),
             "paypal_base":paypal_base(),
             "google_login_configured":bool(GOOGLE_CLIENT_ID),
-            "email_auth_configured":bool(SMTP_PASSWORD),
             "settings":settings_all(),
         }
     finally: db.close()
-
-@app.get("/api/admin/email/health")
-def admin_email_health(request: Request):
-    require_admin(request)
-    return smtp_health()
 
 @app.get("/admin18", response_class=HTMLResponse)
 def admin_page(request: Request):
@@ -1848,7 +1576,7 @@ def admin_credit_users(request: Request, q: str = "", limit: int = 100):
         for a in accounts:
             if q and q not in a.visitor_id.lower() and q not in str(a.user_code or "").lower() and q not in str(a.google_email or "").lower() and q not in str(a.google_name or "").lower(): continue
             c=counts.get(a.visitor_id,{})
-            items.append({"visitor_id":a.visitor_id,"user_code":a.user_code,"credits":credit_balance(a),"free_credits":a.free_credits,"purchased_credits":a.purchased_credits,"unlimited":bool(getattr(a,"unlimited",False)),"last_seen":c.get("last_seen").isoformat() if c.get("last_seen") else None,"downloads":c.get("downloads",0),"completed":c.get("completed",0),"failed":c.get("failed",0),"updated_at":a.updated_at.isoformat() if a.updated_at else None,"google":bool(a.google_sub),"google_email":a.google_email,"google_name":a.google_name,"google_picture":a.google_picture,"email":a.email,"email_verified":bool(getattr(a,"email_verified",False)),"auth_name":a.auth_name,"last_seen":c.get("last_seen").isoformat() if c.get("last_seen") else None})
+            items.append({"visitor_id":a.visitor_id,"user_code":a.user_code,"credits":credit_balance(a),"free_credits":a.free_credits,"purchased_credits":a.purchased_credits,"unlimited":bool(getattr(a,"unlimited",False)),"last_seen":c.get("last_seen").isoformat() if c.get("last_seen") else None,"downloads":c.get("downloads",0),"completed":c.get("completed",0),"failed":c.get("failed",0),"updated_at":a.updated_at.isoformat() if a.updated_at else None,"google":bool(a.google_sub),"google_email":a.google_email,"google_name":a.google_name,"google_picture":a.google_picture,"last_seen":c.get("last_seen").isoformat() if c.get("last_seen") else None})
         return {"items":items[:limit]}
     finally: db.close()
 
