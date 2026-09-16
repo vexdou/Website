@@ -1,8 +1,8 @@
-# QuickDL v22
+# QuickDL v23
 
 Production-oriented QuickDL build for Render + PostgreSQL.
 
-## Major fixes in v22
+## Major fixes in v23
 - Hardened credit-account initialization with transaction-safe SAVEPOINT creation and race handling.
 - Stable 10-digit User ID is shown only through the dedicated **Get ID** button.
 - Rebuilt `index.html` with a cleaner responsive UI, organized buttons, polished downloader, progress state, preview/result card, History, Favorites, Credits and account sheets.

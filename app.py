@@ -73,6 +73,7 @@ class CreditAccount(Base):
     google_picture: Mapped[str | None] = mapped_column(Text, nullable=True)
     google_linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     google_welcome_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    welcome_email_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     email: Mapped[str | None] = mapped_column(String(320), nullable=True, index=True)
     auth_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -137,6 +138,7 @@ def migrate_credit_columns():
                 ("credit_accounts", "google_picture", "TEXT"),
                 ("credit_accounts", "google_linked_at", "TIMESTAMPTZ"),
                 ("credit_accounts", "google_welcome_sent_at", "TIMESTAMPTZ"),
+                ("credit_accounts", "welcome_email_sent_at", "TIMESTAMPTZ"),
                 ("credit_accounts", "email", "VARCHAR(320)"),
                 ("credit_accounts", "auth_name", "VARCHAR(200)"),
                 ("credit_accounts", "password_hash", "TEXT"),
@@ -188,7 +190,7 @@ def migrate_credit_columns():
         elif dialect == "sqlite":
             with engine.begin() as conn:
                 for table, fields in {
-                    "credit_accounts": {"visitor_id":"TEXT", "user_code":"TEXT", "free_credits":"INTEGER NOT NULL DEFAULT 50", "purchased_credits":"INTEGER NOT NULL DEFAULT 0", "month_key":"TEXT NOT NULL DEFAULT ''", "created_at":"DATETIME", "updated_at":"DATETIME", "unlimited":"INTEGER NOT NULL DEFAULT 0", "google_sub":"TEXT", "google_email":"TEXT", "google_name":"TEXT", "google_picture":"TEXT", "google_linked_at":"DATETIME", "google_welcome_sent_at":"DATETIME", "email":"TEXT", "auth_name":"TEXT", "password_hash":"TEXT", "email_verified":"INTEGER NOT NULL DEFAULT 0", "email_code_hash":"TEXT", "email_code_expires_at":"DATETIME", "reset_code_hash":"TEXT", "reset_code_expires_at":"DATETIME"},
+                    "credit_accounts": {"visitor_id":"TEXT", "user_code":"TEXT", "free_credits":"INTEGER NOT NULL DEFAULT 50", "purchased_credits":"INTEGER NOT NULL DEFAULT 0", "month_key":"TEXT NOT NULL DEFAULT ''", "created_at":"DATETIME", "updated_at":"DATETIME", "unlimited":"INTEGER NOT NULL DEFAULT 0", "google_sub":"TEXT", "google_email":"TEXT", "google_name":"TEXT", "google_picture":"TEXT", "google_linked_at":"DATETIME", "google_welcome_sent_at":"DATETIME", "welcome_email_sent_at":"DATETIME", "email":"TEXT", "auth_name":"TEXT", "password_hash":"TEXT", "email_verified":"INTEGER NOT NULL DEFAULT 0", "email_code_hash":"TEXT", "email_code_expires_at":"DATETIME", "reset_code_hash":"TEXT", "reset_code_expires_at":"DATETIME"},
                     "credit_transactions": {"visitor_id":"TEXT", "tx_type":"TEXT DEFAULT 'adjustment'", "credits":"INTEGER NOT NULL DEFAULT 0", "amount":"TEXT", "currency":"TEXT", "package_id":"TEXT", "paypal_order_id":"TEXT", "paypal_capture_id":"TEXT", "status":"TEXT DEFAULT 'completed'", "note":"TEXT", "created_at":"DATETIME"},
                     "paypal_orders": {"order_id":"TEXT", "visitor_id":"TEXT", "package_id":"TEXT", "credits":"INTEGER DEFAULT 0", "amount":"TEXT DEFAULT '0.00'", "currency":"TEXT DEFAULT 'USD'", "status":"TEXT DEFAULT 'created'", "capture_id":"TEXT", "created_at":"DATETIME", "captured_at":"DATETIME"},
                 }.items():
@@ -271,11 +273,12 @@ def current_month_key():
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
 def ensure_credit_account(db, visitor_id):
-    """Return/create the visitor credit account without poisoning the caller transaction.
+    """Get or create a credit account safely under concurrent Render requests.
 
-    Account creation is isolated in a SAVEPOINT. If another request wins the race,
-    we re-read the existing account instead of rolling back the whole DB session.
-    This path is intentionally defensive because every download depends on it.
+    The account is the source of truth for the 50 monthly free credits. Creation
+    uses a SAVEPOINT and then re-reads the winner, so a simultaneous first request
+    cannot poison the SQLAlchemy session or turn into a false credit-initialization
+    error.
     """
     if not visitor_id or not re.fullmatch(r"[a-f0-9]{32}", str(visitor_id)):
         raise ValueError("invalid visitor_id")
@@ -285,28 +288,25 @@ def ensure_credit_account(db, visitor_id):
 
     account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
     if account is None:
-        for _ in range(12):
+        for _ in range(20):
             code = str(secrets.randbelow(9_000_000_000) + 1_000_000_000)
             try:
                 with db.begin_nested():
-                    candidate = CreditAccount(
-                        visitor_id=visitor_id, user_code=code,
-                        free_credits=monthly_free, purchased_credits=0,
-                        month_key=month, created_at=now, updated_at=now, unlimited=False
-                    )
-                    db.add(candidate)
+                    account = CreditAccount(visitor_id=visitor_id, user_code=code,
+                        free_credits=monthly_free, purchased_credits=0, month_key=month,
+                        created_at=now, updated_at=now, unlimited=False)
+                    db.add(account)
                     db.flush()
-                account = candidate
                 break
             except IntegrityError:
                 account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
                 if account is not None:
                     break
         if account is None:
-            raise RuntimeError("credit account could not be created; check the credit_accounts table and unique indexes")
+            raise RuntimeError("credit account creation race could not be resolved")
 
     if not account.user_code:
-        for _ in range(12):
+        for _ in range(20):
             code = str(secrets.randbelow(9_000_000_000) + 1_000_000_000)
             try:
                 with db.begin_nested():
@@ -316,7 +316,7 @@ def ensure_credit_account(db, visitor_id):
             except IntegrityError:
                 db.refresh(account)
         if not account.user_code:
-            raise RuntimeError("credit account has no public user ID")
+            raise RuntimeError("credit account has no user ID")
 
     if account.month_key != month:
         account.free_credits = monthly_free
@@ -382,7 +382,7 @@ def account_payload(visitor_id):
     try:
         account = ensure_credit_account(db, visitor_id)
         db.commit()
-        return {"visitor_id": visitor_id, "user_code": account.user_code, "free_credits": account.free_credits, "purchased_credits": account.purchased_credits, "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS), "video_cost": int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST), "month": account.month_key, "google": bool(account.google_sub), "google_email": account.google_email, "google_name": account.google_name, "google_picture": account.google_picture, "email": account.email, "email_verified": bool(getattr(account, "email_verified", False)), "auth_name": account.auth_name, "authenticated": bool(account.google_sub or account.email_verified), "display_name": account.google_name or account.auth_name or account.google_email or account.email}
+        return {"visitor_id": visitor_id, "user_code": account.user_code, "free_credits": account.free_credits, "purchased_credits": account.purchased_credits, "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS), "video_cost": int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST), "month": account.month_key, "google": bool(account.google_sub), "google_email": account.google_email, "google_name": account.google_name, "google_picture": account.google_picture, "email": account.email, "email_verified": bool(getattr(account, "email_verified", False)), "auth_name": account.auth_name, "authenticated": bool(account.google_sub or account.email_verified), "display_name": account.google_name or account.auth_name or account.google_email or account.email, "welcome_email_sent": bool(getattr(account, "welcome_email_sent_at", None) or getattr(account, "google_welcome_sent_at", None))}
     finally:
         db.close()
 
@@ -740,10 +740,12 @@ def mark_failed(job, error):
     db = Session()
     visitor = None
     already_failed = False
+    job_kind = "video"
     try:
         row = db.scalar(select(Download).where(Download.job_id == job))
         if not row: return
         visitor = row.visitor_id
+        job_kind = row.kind or "video"
         already_failed = row.status == "failed"
         db.execute(update(Download).where(Download.job_id == job).values(status="failed", error=human_error(error)))
         db.commit()
@@ -751,8 +753,9 @@ def mark_failed(job, error):
         db.close()
     if visitor and not already_failed:
         WORKER_HEARTBEAT["jobs_failed"] += 1
-        try: refund_download_credits(visitor, job, int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST))
-        except Exception: log.exception("Could not refund credits for failed job %s", job)
+        if job_kind == "video":
+            try: refund_download_credits(visitor, job, int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST))
+            except Exception: log.exception("Could not refund credits for failed job %s", job)
 
 def process(job, kind):
     cleanup_job(job)
@@ -929,7 +932,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="22.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="23.0.0", lifespan=lifespan)
 
 @app.exception_handler(Exception)
 async def unhandled_exception(request: Request, exc: Exception):
@@ -976,7 +979,7 @@ def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "21.0.0", "worker": WORKER_HEARTBEAT}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "23.0.0", "worker": WORKER_HEARTBEAT}
     finally: db.close()
 
 class DownloadRequest(BaseModel):
@@ -1014,9 +1017,11 @@ def create_download(req: DownloadRequest, request: Request, vexdou_visitor: str 
     if kind not in {"video", "audio"}: raise HTTPException(400, "Invalid download type")
     if not allowed(url): raise HTTPException(400, "Please enter a valid public HTTP/HTTPS URL")
     visitor, job = _visitor_from(request, vexdou_visitor), uuid.uuid4().hex
-    cost = int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST)
+    # A video costs 2 credits. MP3 extraction is treated as a format conversion
+    # and does not consume another video credit.
+    cost = int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST) if kind == "video" else 0
     try:
-        ok, remaining = debit_download_credits(visitor, job, cost)
+        ok, remaining = (True, None) if cost <= 0 else debit_download_credits(visitor, job, cost)
     except Exception as exc:
         diagnostic_id = uuid.uuid4().hex[:12]
         log.exception("credit check failed id=%s visitor=%s", diagnostic_id, visitor)
@@ -1029,8 +1034,9 @@ def create_download(req: DownloadRequest, request: Request, vexdou_visitor: str 
         db.commit()
     except Exception:
         db.rollback()
-        try: refund_download_credits(visitor, job, cost)
-        except Exception: log.exception("Could not refund credits after queue insert failure")
+        if cost > 0:
+            try: refund_download_credits(visitor, job, cost)
+            except Exception: log.exception("Could not refund credits after queue insert failure")
         raise
     finally: db.close()
     out = JSONResponse({"ok":True, "job_id":job, "status":"queued", "platform":platform(url), "kind":kind})
@@ -1326,7 +1332,7 @@ def send_auth_email(to_email,subject,title,intro,code,label):
         _send_html_email(to_email,subject,html,f"{title}\n\n{intro}\n\n{label}: {code}\nExpires in {AUTH_CODE_MINUTES} minutes.")
     except Exception as exc:
         log.exception("email send failed to=%s",to_email)
-        raise HTTPException(502,"We could not send the email right now. Check the Spacemail SMTP settings in Render.") from exc
+        raise HTTPException(502,"We could not send the email right now. Check your Render email delivery settings (Resend is recommended on Render Free).") from exc
 
 def send_google_welcome_email(to_email,name,user_code):
     safe_name=_safe_html(name or "there")
@@ -1365,7 +1371,20 @@ def email_signup_verify(data: EmailCodeRequest, request: Request, vexdou_visitor
         if account.email_verified: raise HTTPException(409,"This email is already verified. Please log in.")
         if not account.email_code_expires_at or account.email_code_expires_at<datetime.now(timezone.utc) or not hmac.compare_digest(account.email_code_hash or "",code_hash(code)): raise HTTPException(400,"The code is invalid or expired.")
         account.email_verified=True; account.email_code_hash=None; account.email_code_expires_at=None; account.updated_at=datetime.now(timezone.utc); db.commit()
-        out=JSONResponse({"ok":True,**account_payload(account.visitor_id)}); _set_visitor_cookie(out,account.visitor_id); return out
+        welcome_sent=False
+        if not account.welcome_email_sent_at and (RESEND_API_KEY or SMTP_PASSWORD):
+            try:
+                send_google_welcome_email(email, account.auth_name or email.split("@")[0], account.user_code)
+                db2=Session()
+                try:
+                    fresh=db2.get(CreditAccount,account.id)
+                    if fresh:
+                        fresh.welcome_email_sent_at=datetime.now(timezone.utc)
+                        db2.commit(); welcome_sent=True
+                finally: db2.close()
+            except Exception:
+                log.exception("welcome email failed for %s", email)
+        out=JSONResponse({"ok":True,"welcome_email_sent":welcome_sent,**account_payload(account.visitor_id)}); _set_visitor_cookie(out,account.visitor_id); return out
     finally: db.close()
 
 @app.post("/api/auth/login")
@@ -1443,14 +1462,14 @@ def google_login(data: GoogleLoginRequest, request: Request, vexdou_visitor: str
             first_google_login = not bool(target.google_sub)
             target.google_sub=sub; target.google_email=email; target.google_name=name; target.google_picture=picture; target.google_linked_at=datetime.now(timezone.utc)
             db.commit()
-            if first_google_login and not target.google_welcome_sent_at and SMTP_PASSWORD:
+            if first_google_login and not target.google_welcome_sent_at and (RESEND_API_KEY or SMTP_PASSWORD):
                 try:
                     send_google_welcome_email(email,name,target.user_code)
                     db2=Session()
                     try:
                         fresh=db2.get(CreditAccount,target.id)
                         if fresh:
-                            fresh.google_welcome_sent_at=datetime.now(timezone.utc); db2.commit()
+                            fresh.google_welcome_sent_at=datetime.now(timezone.utc); fresh.welcome_email_sent_at=datetime.now(timezone.utc); db2.commit()
                     finally:
                         db2.close()
                 except Exception:
@@ -1464,7 +1483,7 @@ def google_login(data: GoogleLoginRequest, request: Request, vexdou_visitor: str
         first_google_login = not bool(current.google_sub)
         current.google_sub=sub; current.google_email=email; current.google_name=name; current.google_picture=picture; current.google_linked_at=datetime.now(timezone.utc); current.updated_at=datetime.now(timezone.utc)
         db.commit()
-        if first_google_login and not current.google_welcome_sent_at and SMTP_PASSWORD:
+        if first_google_login and not current.google_welcome_sent_at and (RESEND_API_KEY or SMTP_PASSWORD):
             try:
                 send_google_welcome_email(email,name,current.user_code)
                 db2=Session()
@@ -1472,6 +1491,7 @@ def google_login(data: GoogleLoginRequest, request: Request, vexdou_visitor: str
                     fresh=db2.get(CreditAccount,current.id)
                     if fresh:
                         fresh.google_welcome_sent_at=datetime.now(timezone.utc)
+                        fresh.welcome_email_sent_at=datetime.now(timezone.utc)
                         db2.commit()
                 finally:
                     db2.close()
@@ -1741,7 +1761,7 @@ def admin_system(request: Request):
         for st in ("queued","downloading","completed","failed"):
             counts[st]=db.scalar(select(func.count()).select_from(Download).where(Download.status==st)) or 0
         return {
-            "version":"19.0.0",
+            "version":"23.0.0",
             "python":os.sys.version.split()[0],
             "yt_dlp":getattr(yt_dlp,"version",{}).get("version") if isinstance(getattr(yt_dlp,"version",None),dict) else str(getattr(yt_dlp,"version","unknown")),
             "ffmpeg":shutil.which("ffmpeg") or "missing",
@@ -1824,7 +1844,7 @@ def admin_overview(request: Request):
             status[r.status] = status.get(r.status, 0) + 1
             p = platform(r.url); plats[p] = plats.get(p, 0) + 1
         users = len({r.visitor_id for r in rows})
-        return {"version":"22.0.0-admin", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
+        return {"version":"23.0.0-admin", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
     finally: db.close()
 
 @app.get("/api/admin/users")
