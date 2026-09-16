@@ -2,6 +2,8 @@ import os, re, time, uuid, mimetypes, logging, threading, ipaddress, socket, shu
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse, urljoin, parse_qs
+from decimal import Decimal, InvalidOperation
+from sqlalchemy import UniqueConstraint
 
 import yt_dlp
 import requests
@@ -52,6 +54,45 @@ class Download(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
+class CreditAccount(Base):
+    __tablename__ = "credit_accounts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    visitor_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    free_credits: Mapped[int] = mapped_column(Integer, default=50)
+    purchased_credits: Mapped[int] = mapped_column(Integer, default=0)
+    month_key: Mapped[str] = mapped_column(String(7), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+class CreditTransaction(Base):
+    __tablename__ = "credit_transactions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    visitor_id: Mapped[str] = mapped_column(String(128), index=True)
+    tx_type: Mapped[str] = mapped_column(String(40))
+    credits: Mapped[int] = mapped_column(Integer, default=0)
+    amount: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    package_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    paypal_order_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    paypal_capture_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="completed")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+class PayPalOrder(Base):
+    __tablename__ = "paypal_orders"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    order_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    visitor_id: Mapped[str] = mapped_column(String(128), index=True)
+    package_id: Mapped[str] = mapped_column(String(40))
+    credits: Mapped[int] = mapped_column(Integer)
+    amount: Mapped[str] = mapped_column(String(32))
+    currency: Mapped[str] = mapped_column(String(8), default="USD")
+    status: Mapped[str] = mapped_column(String(30), default="created")
+    capture_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
 Base.metadata.create_all(engine)
 
 UA = os.getenv(
@@ -61,9 +102,125 @@ UA = os.getenv(
 MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "300"))
 KEEP_FILE_HOURS = float(os.getenv("KEEP_FILE_HOURS", "6"))
 STRICT_PLATFORM_TOGGLES = os.getenv("STRICT_PLATFORM_TOGGLES", "false").lower() in {"1", "true", "yes", "on"}
+MONTHLY_FREE_CREDITS = int(os.getenv("MONTHLY_FREE_CREDITS", "50"))
+VIDEO_CREDIT_COST = int(os.getenv("VIDEO_CREDIT_COST", "2"))
+PAYPAL_MODE = os.getenv("PAYPAL_MODE", "sandbox").strip().lower()
+PAYPAL_CLIENT_ID = os.getenv("PAYPAL_CLIENT_ID", "").strip()
+PAYPAL_CLIENT_SECRET = os.getenv("PAYPAL_CLIENT_SECRET", "").strip()
+PAYPAL_CURRENCY = os.getenv("PAYPAL_CURRENCY", "USD").strip().upper()
+PAYPAL_DOMAIN = os.getenv("PAYPAL_DOMAIN", "").strip()
+PAYPAL_WEBHOOK_ID = os.getenv("PAYPAL_WEBHOOK_ID", "").strip()
+PAYPAL_TOKEN_CACHE = {"token": None, "expires_at": 0}
+CREDIT_PACKAGES = {
+    "starter": {"name": "Starter", "credits": 100, "price": "1.99", "badge": ""},
+    "popular": {"name": "Popular", "credits": 500, "price": "6.99", "badge": "Most popular"},
+    "pro": {"name": "Pro", "credits": 1200, "price": "14.99", "badge": "Best value"},
+    "business": {"name": "Business", "credits": 3000, "price": "29.99", "badge": ""},
+    "mega": {"name": "Mega", "credits": 7500, "price": "59.99", "badge": ""},
+}
 
 def hostname(url):
     return (urlparse(url).hostname or "").lower().rstrip(".")
+
+def current_month_key():
+    return datetime.now(timezone.utc).strftime("%Y-%m")
+
+def ensure_credit_account(db, visitor_id):
+    month = current_month_key()
+    account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
+    if not account:
+        account = CreditAccount(visitor_id=visitor_id, free_credits=MONTHLY_FREE_CREDITS, purchased_credits=0, month_key=month)
+        db.add(account)
+        db.flush()
+    elif account.month_key != month:
+        account.free_credits = MONTHLY_FREE_CREDITS
+        account.month_key = month
+        account.updated_at = datetime.now(timezone.utc)
+        db.flush()
+    return account
+
+def credit_balance(account):
+    return max(0, int(account.free_credits or 0)) + max(0, int(account.purchased_credits or 0))
+
+def debit_download_credits(visitor_id, job_id, cost):
+    db = Session()
+    try:
+        account = ensure_credit_account(db, visitor_id)
+        if credit_balance(account) < cost:
+            db.rollback()
+            return False, credit_balance(account)
+        free_used = min(account.free_credits, cost)
+        account.free_credits -= free_used
+        account.purchased_credits -= (cost - free_used)
+        account.updated_at = datetime.now(timezone.utc)
+        db.add(CreditTransaction(visitor_id=visitor_id, tx_type="download", credits=-cost, status="completed", note=f"Video download {job_id};free_used={free_used}"))
+        db.commit()
+        return True, credit_balance(account)
+    finally:
+        db.close()
+
+def refund_download_credits(visitor_id, job_id, cost):
+    db = Session()
+    try:
+        account = ensure_credit_account(db, visitor_id)
+        tx = db.scalar(select(CreditTransaction).where(CreditTransaction.visitor_id==visitor_id, CreditTransaction.tx_type=="download", CreditTransaction.note.like(f"%{job_id}%")).order_by(CreditTransaction.id.desc()))
+        free_used = 0
+        if tx and tx.note and "free_used=" in tx.note:
+            try: free_used = max(0, min(cost, int(tx.note.rsplit("free_used=",1)[1].split(";",1)[0])))
+            except Exception: free_used = 0
+        account.free_credits += free_used
+        account.purchased_credits += (cost - free_used)
+        account.updated_at = datetime.now(timezone.utc)
+        db.add(CreditTransaction(visitor_id=visitor_id, tx_type="refund", credits=cost, status="completed", note=f"Failed download refund {job_id}"))
+        db.commit()
+    finally:
+        db.close()
+
+def account_payload(visitor_id):
+    db = Session()
+    try:
+        account = ensure_credit_account(db, visitor_id)
+        db.commit()
+        return {"free_credits": account.free_credits, "purchased_credits": account.purchased_credits, "credits": credit_balance(account), "monthly_free": MONTHLY_FREE_CREDITS, "video_cost": VIDEO_CREDIT_COST, "month": account.month_key}
+    finally:
+        db.close()
+
+def paypal_base():
+    return "https://api-m.paypal.com" if PAYPAL_MODE == "live" else "https://api-m.sandbox.paypal.com"
+
+def paypal_token(browser_safe=False, origin=None):
+    if not PAYPAL_CLIENT_ID or not PAYPAL_CLIENT_SECRET:
+        raise HTTPException(503, "PayPal is not configured yet. Add PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET.")
+    if not browser_safe and PAYPAL_TOKEN_CACHE.get("token") and time.time() < PAYPAL_TOKEN_CACHE.get("expires_at", 0) - 60:
+        return PAYPAL_TOKEN_CACHE["token"]
+    data = {"grant_type": "client_credentials"}
+    if browser_safe:
+        data["response_type"] = "client_token"
+        domain = PAYPAL_DOMAIN or origin or ""
+        if domain:
+            data["domains[]"] = domain
+    r = requests.post(f"{paypal_base()}/v1/oauth2/token", auth=(PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET), data=data, headers={"Accept":"application/json","Accept-Language":"en_US"}, timeout=30)
+    if r.status_code >= 400:
+        log.error("PayPal token error %s: %s", r.status_code, r.text[:500])
+        raise HTTPException(502, "PayPal authentication failed. Check your credentials and mode.")
+    payload = r.json()
+    token = payload.get("access_token")
+    if not token: raise HTTPException(502, "PayPal did not return an access token.")
+    if not browser_safe:
+        PAYPAL_TOKEN_CACHE.update({"token": token, "expires_at": time.time() + int(payload.get("expires_in", 300))})
+    return token
+
+def paypal_json(method, path, payload=None, request_id=None):
+    token = paypal_token()
+    headers = {"Authorization": f"Bearer {token}", "Content-Type":"application/json", "Accept":"application/json"}
+    if request_id: headers["PayPal-Request-Id"] = request_id
+    r = requests.request(method, paypal_base()+path, headers=headers, json=payload, timeout=45)
+    if r.status_code >= 400:
+        log.error("PayPal API %s %s: %s", method, path, r.text[:1000])
+        try: detail=r.json()
+        except Exception: detail={}
+        raise HTTPException(502, detail.get("message") or "PayPal payment service error")
+    return r.json() if r.content else {}
 
 def platform(url):
     h = hostname(url)
@@ -354,11 +511,20 @@ def cleanup_job(job):
 
 def mark_failed(job, error):
     db = Session()
+    visitor = None
+    already_failed = False
     try:
+        row = db.scalar(select(Download).where(Download.job_id == job))
+        if not row: return
+        visitor = row.visitor_id
+        already_failed = row.status == "failed"
         db.execute(update(Download).where(Download.job_id == job).values(status="failed", error=human_error(error)))
         db.commit()
     finally:
         db.close()
+    if visitor and not already_failed:
+        try: refund_download_credits(visitor, job, VIDEO_CREDIT_COST)
+        except Exception: log.exception("Could not refund credits for failed job %s", job)
 
 def process(job, kind):
     cleanup_job(job)
@@ -529,7 +695,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="10.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="13.0.0", lifespan=lifespan)
 
 @app.get("/")
 def home():
@@ -548,14 +714,14 @@ def sw(): return FileResponse(BASE / "sw.js", media_type="application/javascript
 
 @app.get("/api/public-config")
 def public_config():
-    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance")}
+    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance"),"credits_enabled":True,"monthly_free":MONTHLY_FREE_CREDITS,"video_cost":VIDEO_CREDIT_COST,"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET),"paypal_mode":PAYPAL_MODE,"currency":PAYPAL_CURRENCY}
 
 @app.get("/api/health")
 def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "10.0.0"}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "13.0.0"}
     finally: db.close()
 
 class DownloadRequest(BaseModel):
@@ -593,10 +759,19 @@ def create_download(req: DownloadRequest, vexdou_visitor: str | None = Cookie(de
     if kind not in {"video", "audio"}: raise HTTPException(400, "Invalid download type")
     if not allowed(url): raise HTTPException(400, "Please enter a valid public HTTP/HTTPS URL")
     visitor, job = vexdou_visitor or uuid.uuid4().hex, uuid.uuid4().hex
+    cost = VIDEO_CREDIT_COST if kind == "video" else VIDEO_CREDIT_COST
+    ok, remaining = debit_download_credits(visitor, job, cost)
+    if not ok:
+        raise HTTPException(402, detail={"code":"OUT_OF_CREDITS","message":"You are out of credits. Please buy more credits to continue.","credits":remaining,"cost":cost})
     db = Session()
     try:
         db.add(Download(job_id=job, visitor_id=visitor, url=url, title="Preparing...", status="queued", kind=kind))
         db.commit()
+    except Exception:
+        db.rollback()
+        try: refund_download_credits(visitor, job, cost)
+        except Exception: log.exception("Could not refund credits after queue insert failure")
+        raise
     finally: db.close()
     out = JSONResponse({"ok":True, "job_id":job, "status":"queued", "platform":platform(url), "kind":kind})
     if not vexdou_visitor:
@@ -691,6 +866,134 @@ def file(job: str, vexdou_visitor: str | None = Cookie(default=None)):
                             headers={"Accept-Ranges":"bytes", "Cache-Control":"private,max-age=3600"})
     finally:
         db.close()
+
+# --- Credits + PayPal ---
+class PackageRequest(BaseModel):
+    package_id: str
+
+@app.get("/api/account")
+def api_account(vexdou_visitor: str | None = Cookie(default=None)):
+    visitor = vexdou_visitor or uuid.uuid4().hex
+    data = account_payload(visitor)
+    out = JSONResponse({"ok":True, **data})
+    if not vexdou_visitor:
+        out.set_cookie("vexdou_visitor", visitor, max_age=31536000, httponly=True, samesite="lax", secure=False)
+    return out
+
+@app.get("/api/credits/packages")
+def credit_packages():
+    return {"currency":PAYPAL_CURRENCY,"video_cost":VIDEO_CREDIT_COST,"monthly_free":MONTHLY_FREE_CREDITS,"packages":[{"id":k,**v} for k,v in CREDIT_PACKAGES.items()]}
+
+@app.get("/api/credits/transactions")
+def credit_transactions(vexdou_visitor: str | None = Cookie(default=None), limit: int = 50):
+    if not vexdou_visitor: return {"items":[]}
+    db=Session()
+    try:
+        rows=db.scalars(select(CreditTransaction).where(CreditTransaction.visitor_id==vexdou_visitor).order_by(CreditTransaction.created_at.desc()).limit(max(1,min(limit,100)))).all()
+        return {"items":[{"type":r.tx_type,"credits":r.credits,"amount":r.amount,"currency":r.currency,"package_id":r.package_id,"status":r.status,"note":r.note,"created_at":r.created_at.isoformat() if r.created_at else None} for r in rows]}
+    finally: db.close()
+
+@app.get("/paypal-api/auth/browser-safe-client-token")
+def paypal_browser_token(request: Request):
+    origin = request.headers.get("origin") or (f"https://{request.headers.get('host')}" if request.headers.get('host') else "")
+    token = paypal_token(browser_safe=True, origin=origin)
+    return {"accessToken":token}
+
+@app.post("/paypal-api/checkout/orders/create")
+def paypal_create_order(data: PackageRequest, vexdou_visitor: str | None = Cookie(default=None)):
+    if not vexdou_visitor: raise HTTPException(401,"Your QuickDL session is missing. Refresh and try again.")
+    package = CREDIT_PACKAGES.get(data.package_id)
+    if not package: raise HTTPException(400,"Invalid credit package.")
+    amount = Decimal(package["price"])
+    payload = {"intent":"CAPTURE","purchase_units":[{"reference_id":data.package_id,"custom_id":data.package_id,"description":f"QuickDL {package['credits']} Credits","amount":{"currency_code":PAYPAL_CURRENCY,"value":f"{amount:.2f}"}}]}
+    order = paypal_json("POST","/v2/checkout/orders",payload,request_id=uuid.uuid4().hex)
+    order_id = order.get("id")
+    if not order_id: raise HTTPException(502,"PayPal did not return an order ID.")
+    db=Session()
+    try:
+        db.add(PayPalOrder(order_id=order_id,visitor_id=vexdou_visitor,package_id=data.package_id,credits=package["credits"],amount=f"{amount:.2f}",currency=PAYPAL_CURRENCY,status="created"))
+        db.commit()
+    finally: db.close()
+    return {"id":order_id}
+
+@app.post("/paypal-api/checkout/orders/{order_id}/capture")
+def paypal_capture_order(order_id: str, vexdou_visitor: str | None = Cookie(default=None)):
+    if not vexdou_visitor: raise HTTPException(401,"QuickDL session missing.")
+    db=Session()
+    try:
+        po=db.scalar(select(PayPalOrder).where(PayPalOrder.order_id==order_id,PayPalOrder.visitor_id==vexdou_visitor).with_for_update())
+        if not po: raise HTTPException(404,"Payment order not found.")
+        if po.status=="captured": return {"ok":True,"already_credited":True,"credits":account_payload(vexdou_visitor)["credits"]}
+        package=CREDIT_PACKAGES.get(po.package_id)
+        if not package: raise HTTPException(400,"Credit package no longer exists.")
+    finally: db.close()
+    capture=paypal_json("POST",f"/v2/checkout/orders/{order_id}/capture",{})
+    status=capture.get("status")
+    if status != "COMPLETED": raise HTTPException(402,"PayPal payment was not completed.")
+    captures=(capture.get("purchase_units") or [{}])[0].get("payments",{}).get("captures",[]) or []
+    cap=captures[0] if captures else {}
+    capture_id=cap.get("id")
+    db=Session()
+    try:
+        po=db.scalar(select(PayPalOrder).where(PayPalOrder.order_id==order_id,PayPalOrder.visitor_id==vexdou_visitor).with_for_update())
+        if not po: raise HTTPException(404,"Payment order not found.")
+        if po.status != "captured":
+            account=ensure_credit_account(db,vexdou_visitor)
+            account.purchased_credits += po.credits
+            account.updated_at=datetime.now(timezone.utc)
+            po.status="captured"; po.capture_id=capture_id; po.captured_at=datetime.now(timezone.utc)
+            db.add(CreditTransaction(visitor_id=vexdou_visitor,tx_type="purchase",credits=po.credits,amount=po.amount,currency=po.currency,package_id=po.package_id,paypal_order_id=order_id,paypal_capture_id=capture_id,status="completed",note=f"PayPal purchase: {package['name']}"))
+            db.commit()
+        balance=account_payload(vexdou_visitor)
+        return {"ok":True,"credits_added":po.credits,"balance":balance["credits"],"order_id":order_id,"capture_id":capture_id}
+    finally: db.close()
+
+@app.post("/paypal-api/webhook")
+async def paypal_webhook(request: Request):
+    if not PAYPAL_WEBHOOK_ID:
+        return {"ok":True,"ignored":True}
+    raw = await request.body()
+    try:
+        event = json.loads(raw.decode("utf-8"))
+    except Exception:
+        raise HTTPException(400,"Invalid webhook payload")
+    headers = {k.lower():v for k,v in request.headers.items()}
+    required = ["paypal-auth-algo","paypal-cert-url","paypal-transmission-id","paypal-transmission-sig","paypal-transmission-time"]
+    if any(not headers.get(k) for k in required):
+        raise HTTPException(400,"Missing PayPal webhook signature headers")
+    verify_payload = {
+        "auth_algo": headers["paypal-auth-algo"],
+        "cert_url": headers["paypal-cert-url"],
+        "transmission_id": headers["paypal-transmission-id"],
+        "transmission_sig": headers["paypal-transmission-sig"],
+        "transmission_time": headers["paypal-transmission-time"],
+        "webhook_id": PAYPAL_WEBHOOK_ID,
+        "webhook_event": event,
+    }
+    token = paypal_token()
+    vr = requests.post(paypal_base()+"/v1/notifications/verify-webhook-signature",headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"},json=verify_payload,timeout=30)
+    if vr.status_code >= 400 or vr.json().get("verification_status") != "SUCCESS":
+        raise HTTPException(401,"Invalid PayPal webhook signature")
+    if event.get("event_type") != "PAYMENT.CAPTURE.COMPLETED":
+        return {"ok":True,"ignored":True}
+    resource = event.get("resource") or {}
+    related = ((resource.get("supplementary_data") or {}).get("related_ids") or {})
+    order_id = related.get("order_id")
+    capture_id = resource.get("id")
+    if not order_id:
+        return {"ok":True,"ignored":True}
+    db=Session()
+    try:
+        po=db.scalar(select(PayPalOrder).where(PayPalOrder.order_id==order_id).with_for_update())
+        if not po or po.status=="captured": return {"ok":True,"already_processed":True}
+        account=ensure_credit_account(db,po.visitor_id)
+        account.purchased_credits += po.credits
+        account.updated_at=datetime.now(timezone.utc)
+        po.status="captured"; po.capture_id=capture_id; po.captured_at=datetime.now(timezone.utc)
+        db.add(CreditTransaction(visitor_id=po.visitor_id,tx_type="purchase",credits=po.credits,amount=po.amount,currency=po.currency,package_id=po.package_id,paypal_order_id=order_id,paypal_capture_id=capture_id,status="completed",note="PayPal webhook purchase"))
+        db.commit()
+        return {"ok":True,"credited":po.credits}
+    finally: db.close()
 
 # --- Admin18 control center ---
 from fastapi import Request
