@@ -631,9 +631,18 @@ def history(vexdou_visitor: str | None = Cookie(default=None)):
             Download.visitor_id == vexdou_visitor, Download.status == "completed"
         ).order_by(Download.created_at.desc()).limit(100)).all()
         items = []
+        seen = set()
         for r in rows:
             s = serialize(r)
-            if s["status"] == "completed": items.append(s)
+            if s["status"] != "completed":
+                continue
+            # Prevent the same media request from appearing twice in History.
+            # Keep the newest completed record when duplicate jobs exist.
+            key = (str(r.url).strip().rstrip("/"), r.kind)
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(s)
         return {"items":items}
     finally: db.close()
 
