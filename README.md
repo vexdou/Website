@@ -1,41 +1,36 @@
-# QuickDL Credits + Stripe
+# QuickDL — full fixed build
 
-This build adds a server-side credit ledger and Stripe Checkout/webhooks.
+This build keeps the QuickDL backend structure and adds a production-oriented frontend/PWA layer.
 
-## Default credit system
-- New visitor: 100 free credits, once.
-- Video or MP3: 2 credits.
-- Starter: 100 credits / $1.
-- Plus: 550 credits / $5.
-- Pro: 1,200 credits / $10.
+## Fixed / improved
+- YouTube normal videos and Shorts use multiple public yt-dlp client attempts.
+- Instagram posts/reels use yt-dlp plus a public-page/embed fallback where the public page exposes media.
+- Facebook, Pinterest, TikTok, X/Twitter, Snapchat and generic web URLs go through the public yt-dlp extractor.
+- Stale per-platform database flags no longer block downloads by default. Set `STRICT_PLATFORM_TOGGLES=true` if you want admin platform switches to actively block them.
+- YouTube JavaScript runtime is enabled only when Node.js exists, avoiding a missing-node crash on Python-only hosts.
+- `/api/preview/{job}` provides an inline HTML5 preview response; `/api/file/{job}` remains the save/download endpoint.
+- History is loaded from the server database and survives page reloads until the user clears it or the stored media file expires.
+- Credits/Stripe UI is removed from the frontend build.
+- PWA manifest + service worker + QuickDL icons are included.
+- Install banner uses the browser's `beforeinstallprompt` event, disappears after 15 seconds, and can be closed immediately with X.
 
-Packages are configurable through `CREDIT_PACKAGES_JSON`.
+## Environment
+Required:
+- `DATABASE_URL`
+- `ADMIN_PASSWORD`
+- `ADMIN_SESSION_SECRET`
 
-## Render environment variables
-Set:
-- DATABASE_URL
-- ADMIN_PASSWORD
-- ADMIN_SESSION_SECRET
-- STRIPE_SECRET_KEY
-- STRIPE_WEBHOOK_SECRET
-- PUBLIC_BASE_URL=https://quickdl.site
+Useful:
+- `MAX_FILE_MB=300`
+- `KEEP_FILE_HOURS=6`
+- `STRICT_PLATFORM_TOGGLES=false`
+- `WORK_DIR=/tmp/quickdl`
 
-Never commit Stripe secret/webhook keys to GitHub.
+## Important platform limitation
+The downloader is for public media URLs. It does not bypass private posts, login walls, DRM, CAPTCHA, or platform access controls. Some platforms can temporarily rate-limit automated traffic. YouTube also changes its delivery requirements over time; yt-dlp documents current client/PO-token limitations.
 
-## Stripe webhook
-Create a Stripe webhook endpoint:
-`https://quickdl.site/api/stripe/webhook`
+## PWA install
+Serve the site over HTTPS in production. Chromium-based browsers expose the in-page install prompt when the PWA meets their installability conditions. iOS Safari does not expose the `beforeinstallprompt` event, so users there should use Safari's Add to Home Screen menu.
 
-Enable:
-- checkout.session.completed
-- checkout.session.async_payment_succeeded
-
-The webhook secret goes in `STRIPE_WEBHOOK_SECRET`.
-
-Credits are granted only after a verified webhook and are idempotent by Stripe Checkout Session ID.
-
-## Database
-The app creates new tables automatically and includes a small additive migration for the new `downloads.credit_cost` and `downloads.credit_refunded` columns. Back up production data before deployment.
-
-## Important identity note
-Credits are tied to the server-side `vexdou_visitor` cookie. Clearing cookies loses the browser's link to that credit account. For production money flows, an account/email login is recommended.
+## Docker
+A Dockerfile is included with FFmpeg and Node.js so audio conversion and YouTube JavaScript extraction have their required runtime available.
