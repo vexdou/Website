@@ -1,4 +1,4 @@
-import os, re, time, uuid, mimetypes, logging, threading, ipaddress, socket, shutil
+import os, re, time, uuid, mimetypes, logging, threading, ipaddress, socket, shutil, json
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse, urljoin, parse_qs
@@ -12,8 +12,8 @@ try:
 except Exception:
     curl_requests = None
 from html import unescape
-from fastapi import FastAPI, HTTPException, Cookie
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Cookie, Request
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy import create_engine, String, Text, Integer, DateTime, select, update, delete
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
@@ -104,7 +104,7 @@ KEEP_FILE_HOURS = float(os.getenv("KEEP_FILE_HOURS", "6"))
 STRICT_PLATFORM_TOGGLES = os.getenv("STRICT_PLATFORM_TOGGLES", "false").lower() in {"1", "true", "yes", "on"}
 MONTHLY_FREE_CREDITS = int(os.getenv("MONTHLY_FREE_CREDITS", "50"))
 VIDEO_CREDIT_COST = int(os.getenv("VIDEO_CREDIT_COST", "2"))
-PAYPAL_MODE = os.getenv("PAYPAL_MODE", "sandbox").strip().lower()
+PAYPAL_MODE = os.getenv("PAYPAL_MODE", "live").strip().lower()
 PAYPAL_CLIENT_ID = os.getenv("PAYPAL_CLIENT_ID", "").strip()
 PAYPAL_CLIENT_SECRET = os.getenv("PAYPAL_CLIENT_SECRET", "").strip()
 PAYPAL_CURRENCY = os.getenv("PAYPAL_CURRENCY", "USD").strip().upper()
@@ -949,6 +949,7 @@ def paypal_capture_order(order_id: str, vexdou_visitor: str | None = Cookie(defa
     finally: db.close()
 
 @app.post("/paypal-api/webhook")
+@app.post("/api/paypal/webhook")
 async def paypal_webhook(request: Request):
     if not PAYPAL_WEBHOOK_ID:
         return {"ok":True,"ignored":True}
@@ -996,10 +997,8 @@ async def paypal_webhook(request: Request):
     finally: db.close()
 
 # --- Admin18 control center ---
-from fastapi import Request
-from fastapi.responses import HTMLResponse
 from sqlalchemy import Float, Boolean
-import hashlib, hmac, base64, json
+import hashlib, hmac, base64
 
 class AdminSetting(Base):
     __tablename__ = "admin_settings"
