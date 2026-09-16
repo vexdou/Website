@@ -15,7 +15,7 @@ from html import unescape
 from fastapi import FastAPI, HTTPException, Cookie, Request
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from pydantic import BaseModel, HttpUrl
-from sqlalchemy import create_engine, String, Text, Integer, DateTime, select, update, delete
+from sqlalchemy import create_engine, String, Text, Integer, DateTime, select, update, delete, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from contextlib import asynccontextmanager
 
@@ -125,8 +125,6 @@ KEEP_FILE_HOURS = float(os.getenv("KEEP_FILE_HOURS", "6"))
 STRICT_PLATFORM_TOGGLES = os.getenv("STRICT_PLATFORM_TOGGLES", "false").lower() in {"1", "true", "yes", "on"}
 MONTHLY_FREE_CREDITS = int(os.getenv("MONTHLY_FREE_CREDITS", "50"))
 VIDEO_CREDIT_COST = int(os.getenv("VIDEO_CREDIT_COST", "2"))
-GIFT_CREDITS = int(os.getenv("GIFT_CREDITS", "10"))
-GIFT_COOLDOWN_HOURS = int(os.getenv("GIFT_COOLDOWN_HOURS", "24"))
 PAYPAL_MODE = os.getenv("PAYPAL_MODE", "live").strip().lower()
 PAYPAL_CLIENT_ID = os.getenv("PAYPAL_CLIENT_ID", "").strip()
 PAYPAL_CLIENT_SECRET = os.getenv("PAYPAL_CLIENT_SECRET", "").strip()
@@ -216,7 +214,7 @@ def account_payload(visitor_id):
     try:
         account = ensure_credit_account(db, visitor_id)
         db.commit()
-        return {"free_credits": account.free_credits, "purchased_credits": account.purchased_credits, "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": MONTHLY_FREE_CREDITS, "video_cost": VIDEO_CREDIT_COST, "month": account.month_key, "gift_credits": int(setting_get("gift_credits") or GIFT_CREDITS) if "setting_get" in globals() else GIFT_CREDITS}
+        return {"free_credits": account.free_credits, "purchased_credits": account.purchased_credits, "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS), "video_cost": int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST), "month": account.month_key}
     finally:
         db.close()
 
@@ -760,7 +758,12 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="15.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="16.0.0", lifespan=lifespan)
+
+@app.exception_handler(Exception)
+async def unhandled_exception(request: Request, exc: Exception):
+    log.exception("Unhandled request error %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"ok": False, "error": "internal_error", "message": "Server error. Check the admin Error Center / Render logs."})
 
 @app.get("/")
 def home():
@@ -779,14 +782,14 @@ def sw(): return FileResponse(BASE / "sw.js", media_type="application/javascript
 
 @app.get("/api/public-config")
 def public_config():
-    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance"),"credits_enabled":True,"monthly_free":MONTHLY_FREE_CREDITS,"video_cost":VIDEO_CREDIT_COST,"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET),"paypal_mode":PAYPAL_MODE,"paypal_client_id":PAYPAL_CLIENT_ID,"currency":PAYPAL_CURRENCY,"gift_enabled":setting_bool("gift_enabled"),"gift_credits":int(setting_get("gift_credits") or GIFT_CREDITS)}
+    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance"),"credits_enabled":True,"monthly_free":int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS),"video_cost":int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST),"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET),"paypal_mode":PAYPAL_MODE,"paypal_client_id":PAYPAL_CLIENT_ID,"currency":PAYPAL_CURRENCY}
 
 @app.get("/api/health")
 def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "15.0.0", "worker": WORKER_HEARTBEAT}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "16.0.0", "worker": WORKER_HEARTBEAT}
     finally: db.close()
 
 class DownloadRequest(BaseModel):
@@ -824,8 +827,12 @@ def create_download(req: DownloadRequest, vexdou_visitor: str | None = Cookie(de
     if kind not in {"video", "audio"}: raise HTTPException(400, "Invalid download type")
     if not allowed(url): raise HTTPException(400, "Please enter a valid public HTTP/HTTPS URL")
     visitor, job = vexdou_visitor or uuid.uuid4().hex, uuid.uuid4().hex
-    cost = VIDEO_CREDIT_COST if kind == "video" else VIDEO_CREDIT_COST
-    ok, remaining = debit_download_credits(visitor, job, cost)
+    cost = int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST)
+    try:
+        ok, remaining = debit_download_credits(visitor, job, cost)
+    except Exception as exc:
+        log.exception("credit check failed visitor=%s", visitor)
+        raise HTTPException(500, "Could not initialize your credit account. Please try again.") from exc
     if not ok:
         raise HTTPException(402, detail={"code":"OUT_OF_CREDITS","message":"You are out of credits. Please buy more credits to continue.","credits":remaining or 0,"cost":cost})
     db = Session()
@@ -848,7 +855,7 @@ def create_download(req: DownloadRequest, vexdou_visitor: str | None = Cookie(de
             max_age=31536000,
             httponly=True,
             samesite="lax",
-            secure=False,
+            secure=bool(os.getenv("COOKIE_SECURE", "true").lower() in {"1","true","yes","on"}),
         )
     return out
 
@@ -944,33 +951,6 @@ def api_account(vexdou_visitor: str | None = Cookie(default=None)):
     if not vexdou_visitor:
         out.set_cookie("vexdou_visitor", visitor, max_age=31536000, httponly=True, samesite="lax", secure=False)
     return out
-
-@app.post("/api/gift/claim")
-def claim_gift(vexdou_visitor: str | None = Cookie(default=None)):
-    visitor = vexdou_visitor or uuid.uuid4().hex
-    if not setting_bool("gift_enabled"):
-        raise HTTPException(403, "Daily gifts are currently disabled.")
-    db = Session()
-    try:
-        account = ensure_credit_account(db, visitor)
-        now = datetime.now(timezone.utc)
-        cooldown = int(setting_get("gift_cooldown_hours") or GIFT_COOLDOWN_HOURS) * 3600
-        if account.gift_claimed_at and (now - account.gift_claimed_at).total_seconds() < cooldown:
-            remaining = int(cooldown - (now-account.gift_claimed_at).total_seconds())
-            raise HTTPException(429, f"Your next gift is available in about {max(1, remaining//3600)}h.")
-        gift = max(0, int(setting_get("gift_credits") or GIFT_CREDITS))
-        if not bool(getattr(account, "unlimited", False)):
-            account.purchased_credits += gift
-        account.gift_claimed_at = now
-        account.gift_streak = int(account.gift_streak or 0) + 1
-        account.updated_at = now
-        db.add(CreditTransaction(visitor_id=visitor, tx_type="gift", credits=gift, status="completed", note="Daily gift"))
-        db.commit()
-        payload = account_payload(visitor)
-        out = JSONResponse({"ok":True,"gift":gift,"streak":account.gift_streak,**payload})
-        if not vexdou_visitor: out.set_cookie("vexdou_visitor", visitor, max_age=31536000, httponly=True, samesite="lax", secure=False)
-        return out
-    finally: db.close()
 
 @app.get("/api/credits/packages")
 def credit_packages():
@@ -1095,7 +1075,6 @@ async def paypal_webhook(request: Request):
     finally: db.close()
 
 # --- Admin18 control center ---
-from sqlalchemy import Float, Boolean
 import hashlib, hmac, base64
 
 class AdminSetting(Base):
@@ -1132,11 +1111,9 @@ DEFAULT_SETTINGS = {
     "x_enabled": "true",
     "snapchat_enabled": "true",
     "web_enabled": "true",
-    "gift_enabled": "true",
-    "gift_credits": str(GIFT_CREDITS),
-    "gift_cooldown_hours": str(GIFT_COOLDOWN_HOURS),
     "max_concurrent_jobs": os.getenv("MAX_CONCURRENT_JOBS", "2"),
     "monthly_free_credits": str(MONTHLY_FREE_CREDITS),
+    "video_credit_cost": str(VIDEO_CREDIT_COST),
 }
 
 def setting_get(key):
@@ -1190,6 +1167,31 @@ def require_admin(request: Request):
 
 def admin_file(name):
     return FileResponse(BASE / "templates" / name)
+
+@app.get("/api/admin/system")
+def admin_system(request: Request):
+    require_admin(request)
+    db=Session()
+    try:
+        counts={}
+        for st in ("queued","downloading","completed","failed"):
+            counts[st]=db.scalar(select(func.count()).select_from(Download).where(Download.status==st)) or 0
+        return {
+            "version":"16.0.0",
+            "python":os.sys.version.split()[0],
+            "yt_dlp":getattr(yt_dlp,"version",{}).get("version") if isinstance(getattr(yt_dlp,"version",None),dict) else str(getattr(yt_dlp,"version","unknown")),
+            "ffmpeg":shutil.which("ffmpeg") or "missing",
+            "node":shutil.which("node") or "missing",
+            "work_dir":str(WORK),
+            "work_exists":WORK.exists(),
+            "worker":WORKER_HEARTBEAT,
+            "downloads":counts,
+            "paypal_mode":PAYPAL_MODE,
+            "paypal_configured":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET),
+            "paypal_base":paypal_base(),
+            "settings":settings_all(),
+        }
+    finally: db.close()
 
 @app.get("/admin18", response_class=HTMLResponse)
 def admin_page(request: Request):
@@ -1315,8 +1317,23 @@ def admin_credit_users(request: Request, q: str = "", limit: int = 100):
         for a in accounts:
             if q and q not in a.visitor_id.lower(): continue
             c=counts.get(a.visitor_id,{})
-            items.append({"visitor_id":a.visitor_id,"credits":credit_balance(a),"free_credits":a.free_credits,"purchased_credits":a.purchased_credits,"unlimited":bool(getattr(a,"unlimited",False)),"gift_streak":a.gift_streak,"downloads":c.get("downloads",0),"completed":c.get("completed",0),"failed":c.get("failed",0),"updated_at":a.updated_at.isoformat() if a.updated_at else None,"last_seen":c.get("last_seen").isoformat() if c.get("last_seen") else None})
+            items.append({"visitor_id":a.visitor_id,"credits":credit_balance(a),"free_credits":a.free_credits,"purchased_credits":a.purchased_credits,"unlimited":bool(getattr(a,"unlimited",False)),"last_seen":c.get("last_seen").isoformat() if c.get("last_seen") else None,"downloads":c.get("downloads",0),"completed":c.get("completed",0),"failed":c.get("failed",0),"updated_at":a.updated_at.isoformat() if a.updated_at else None,"last_seen":c.get("last_seen").isoformat() if c.get("last_seen") else None})
         return {"items":items[:limit]}
+    finally: db.close()
+
+@app.get("/api/admin/user/{visitor_id}")
+def admin_user_detail(visitor_id: str, request: Request):
+    require_admin(request)
+    db=Session()
+    try:
+        a=ensure_credit_account(db,visitor_id); db.commit()
+        rows=db.scalars(select(CreditTransaction).where(CreditTransaction.visitor_id==visitor_id).order_by(CreditTransaction.created_at.desc()).limit(100)).all()
+        downloads=db.scalars(select(Download).where(Download.visitor_id==visitor_id).order_by(Download.created_at.desc()).limit(100)).all()
+        return {
+            "account": account_payload(visitor_id),
+            "transactions":[{"type":r.tx_type,"credits":r.credits,"amount":r.amount,"currency":r.currency,"package_id":r.package_id,"status":r.status,"note":r.note,"created_at":r.created_at.isoformat() if r.created_at else None} for r in rows],
+            "downloads":[{"job_id":r.job_id,"url":r.url,"title":r.title,"platform":platform(r.url),"status":r.status,"error":r.error,"created_at":r.created_at.isoformat() if r.created_at else None} for r in downloads],
+        }
     finally: db.close()
 
 @app.post("/api/admin/credits/grant")
