@@ -1,4 +1,4 @@
-import os, re, time, uuid, mimetypes, logging, threading, ipaddress, socket, shutil, json
+import os, re, time, uuid, mimetypes, logging, threading, ipaddress, socket, shutil, json, secrets
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse, urljoin, parse_qs
@@ -59,6 +59,7 @@ class CreditAccount(Base):
     __tablename__ = "credit_accounts"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     visitor_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    user_code: Mapped[str | None] = mapped_column(String(10), unique=True, nullable=True, index=True)
     free_credits: Mapped[int] = mapped_column(Integer, default=50)
     purchased_credits: Mapped[int] = mapped_column(Integer, default=0)
     month_key: Mapped[str] = mapped_column(String(7), default="")
@@ -98,98 +99,105 @@ class PayPalOrder(Base):
 Base.metadata.create_all(engine)
 
 def migrate_credit_columns():
-    """Backward-compatible schema migration for persistent Render/Postgres DBs.
+    """Best-effort, restart-safe schema migration for existing Render databases.
 
-    Earlier QuickDL builds created the credit tables with fewer columns. SQLAlchemy
-    create_all() does not alter existing tables, so upgrades could leave an old
-    credit_accounts schema and every download would then fail during credit init.
-    This migration explicitly adds every column used by the current credit system.
+    Each ALTER is committed independently so one old/odd index cannot roll back the
+    whole migration. Existing users also receive a stable 10-digit public user code.
     """
     try:
-        with engine.begin() as conn:
-            dialect = conn.dialect.name
-            tables = {r[0] for r in conn.execute(text(
-                "SELECT table_name FROM information_schema.tables WHERE table_schema='public'"
-            ))} if dialect == 'postgresql' else set()
-
-            if dialect == "postgresql":
-                # PostgreSQL supports IF NOT EXISTS, making this safe on every deploy.
-                stmts = {
-                    "credit_accounts": [
-                        "ALTER TABLE credit_accounts ADD COLUMN IF NOT EXISTS visitor_id VARCHAR(128)",
-                        "ALTER TABLE credit_accounts ADD COLUMN IF NOT EXISTS free_credits INTEGER NOT NULL DEFAULT 50",
-                        "ALTER TABLE credit_accounts ADD COLUMN IF NOT EXISTS purchased_credits INTEGER NOT NULL DEFAULT 0",
-                        "ALTER TABLE credit_accounts ADD COLUMN IF NOT EXISTS month_key VARCHAR(7) NOT NULL DEFAULT ''",
-                        "ALTER TABLE credit_accounts ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
-                        "ALTER TABLE credit_accounts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
-                        "ALTER TABLE credit_accounts ADD COLUMN IF NOT EXISTS unlimited BOOLEAN NOT NULL DEFAULT FALSE",
-                    ],
-                    "credit_transactions": [
-                        "ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS visitor_id VARCHAR(128)",
-                        "ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS tx_type VARCHAR(40) DEFAULT 'adjustment'",
-                        "ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS credits INTEGER NOT NULL DEFAULT 0",
-                        "ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS amount VARCHAR(32)",
-                        "ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS currency VARCHAR(8)",
-                        "ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS package_id VARCHAR(40)",
-                        "ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS paypal_order_id VARCHAR(80)",
-                        "ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS paypal_capture_id VARCHAR(80)",
-                        "ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS status VARCHAR(30) DEFAULT 'completed'",
-                        "ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS note TEXT",
-                        "ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
-                    ],
-                    "paypal_orders": [
-                        "ALTER TABLE paypal_orders ADD COLUMN IF NOT EXISTS order_id VARCHAR(80)",
-                        "ALTER TABLE paypal_orders ADD COLUMN IF NOT EXISTS visitor_id VARCHAR(128)",
-                        "ALTER TABLE paypal_orders ADD COLUMN IF NOT EXISTS package_id VARCHAR(40)",
-                        "ALTER TABLE paypal_orders ADD COLUMN IF NOT EXISTS credits INTEGER DEFAULT 0",
-                        "ALTER TABLE paypal_orders ADD COLUMN IF NOT EXISTS amount VARCHAR(32) DEFAULT '0.00'",
-                        "ALTER TABLE paypal_orders ADD COLUMN IF NOT EXISTS currency VARCHAR(8) DEFAULT 'USD'",
-                        "ALTER TABLE paypal_orders ADD COLUMN IF NOT EXISTS status VARCHAR(30) DEFAULT 'created'",
-                        "ALTER TABLE paypal_orders ADD COLUMN IF NOT EXISTS capture_id VARCHAR(80)",
-                        "ALTER TABLE paypal_orders ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
-                        "ALTER TABLE paypal_orders ADD COLUMN IF NOT EXISTS captured_at TIMESTAMPTZ",
-                    ],
-                }
-                for table, commands in stmts.items():
-                    if table in tables:
-                        for stmt in commands:
-                            conn.execute(text(stmt))
-
-                # Ensure the current visitor identifier remains unique when possible.
-                conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_credit_accounts_visitor_id ON credit_accounts(visitor_id)"))
-                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_credit_transactions_visitor_id ON credit_transactions(visitor_id)"))
-                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_paypal_orders_visitor_id ON paypal_orders(visitor_id)"))
-                conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_paypal_orders_order_id ON paypal_orders(order_id)"))
-            elif dialect == "sqlite":
-                def cols(table):
-                    return {r[1] for r in conn.execute(text(f"PRAGMA table_info({table})"))}
-                migrations = {
-                    "credit_accounts": {
-                        "visitor_id":"TEXT", "free_credits":"INTEGER NOT NULL DEFAULT 50",
-                        "purchased_credits":"INTEGER NOT NULL DEFAULT 0", "month_key":"TEXT NOT NULL DEFAULT ''",
-                        "created_at":"DATETIME", "updated_at":"DATETIME", "unlimited":"INTEGER NOT NULL DEFAULT 0",
-                    },
-                    "credit_transactions": {
-                        "visitor_id":"TEXT", "tx_type":"TEXT DEFAULT 'adjustment'", "credits":"INTEGER NOT NULL DEFAULT 0",
-                        "amount":"TEXT", "currency":"TEXT", "package_id":"TEXT", "paypal_order_id":"TEXT",
-                        "paypal_capture_id":"TEXT", "status":"TEXT DEFAULT 'completed'", "note":"TEXT", "created_at":"DATETIME",
-                    },
-                    "paypal_orders": {
-                        "order_id":"TEXT", "visitor_id":"TEXT", "package_id":"TEXT", "credits":"INTEGER DEFAULT 0",
-                        "amount":"TEXT DEFAULT '0.00'", "currency":"TEXT DEFAULT 'USD'", "status":"TEXT DEFAULT 'created'",
-                        "capture_id":"TEXT", "created_at":"DATETIME", "captured_at":"DATETIME",
-                    },
-                }
-                for table, fields in migrations.items():
-                    existing=cols(table)
-                    for name, typ in fields.items():
-                        if name not in existing:
-                            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {typ}"))
+        dialect = engine.dialect.name
+        if dialect == "postgresql":
+            additions = [
+                ("credit_accounts", "visitor_id", "VARCHAR(128)"),
+                ("credit_accounts", "user_code", "VARCHAR(10)"),
+                ("credit_accounts", "free_credits", "INTEGER NOT NULL DEFAULT 50"),
+                ("credit_accounts", "purchased_credits", "INTEGER NOT NULL DEFAULT 0"),
+                ("credit_accounts", "month_key", "VARCHAR(7) NOT NULL DEFAULT ''"),
+                ("credit_accounts", "created_at", "TIMESTAMPTZ DEFAULT NOW()"),
+                ("credit_accounts", "updated_at", "TIMESTAMPTZ DEFAULT NOW()"),
+                ("credit_accounts", "unlimited", "BOOLEAN NOT NULL DEFAULT FALSE"),
+                ("credit_transactions", "visitor_id", "VARCHAR(128)"),
+                ("credit_transactions", "tx_type", "VARCHAR(40) DEFAULT 'adjustment'"),
+                ("credit_transactions", "credits", "INTEGER NOT NULL DEFAULT 0"),
+                ("credit_transactions", "amount", "VARCHAR(32)"),
+                ("credit_transactions", "currency", "VARCHAR(8)"),
+                ("credit_transactions", "package_id", "VARCHAR(40)"),
+                ("credit_transactions", "paypal_order_id", "VARCHAR(80)"),
+                ("credit_transactions", "paypal_capture_id", "VARCHAR(80)"),
+                ("credit_transactions", "status", "VARCHAR(30) DEFAULT 'completed'"),
+                ("credit_transactions", "note", "TEXT"),
+                ("credit_transactions", "created_at", "TIMESTAMPTZ DEFAULT NOW()"),
+                ("paypal_orders", "order_id", "VARCHAR(80)"),
+                ("paypal_orders", "visitor_id", "VARCHAR(128)"),
+                ("paypal_orders", "package_id", "VARCHAR(40)"),
+                ("paypal_orders", "credits", "INTEGER DEFAULT 0"),
+                ("paypal_orders", "amount", "VARCHAR(32) DEFAULT '0.00'"),
+                ("paypal_orders", "currency", "VARCHAR(8) DEFAULT 'USD'"),
+                ("paypal_orders", "status", "VARCHAR(30) DEFAULT 'created'"),
+                ("paypal_orders", "capture_id", "VARCHAR(80)"),
+                ("paypal_orders", "created_at", "TIMESTAMPTZ DEFAULT NOW()"),
+                ("paypal_orders", "captured_at", "TIMESTAMPTZ"),
+            ]
+            for table, col, typ in additions:
+                try:
+                    with engine.begin() as conn:
+                        exists = conn.execute(text("SELECT to_regclass(:t)"), {"t": table}).scalar()
+                        if exists:
+                            conn.execute(text(f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {typ}'))
+                except Exception:
+                    log.exception("schema migration column failed: %s.%s", table, col)
+            # Indexes are intentionally independent from column migration.
+            for stmt in [
+                "CREATE INDEX IF NOT EXISTS ix_credit_accounts_user_code ON credit_accounts(user_code)",
+                "CREATE INDEX IF NOT EXISTS ix_credit_transactions_visitor_id ON credit_transactions(visitor_id)",
+                "CREATE INDEX IF NOT EXISTS ix_paypal_orders_visitor_id ON paypal_orders(visitor_id)",
+            ]:
+                try:
+                    with engine.begin() as conn: conn.execute(text(stmt))
+                except Exception: log.exception("schema migration index failed: %s", stmt)
+        elif dialect == "sqlite":
+            with engine.begin() as conn:
+                for table, fields in {
+                    "credit_accounts": {"visitor_id":"TEXT", "user_code":"TEXT", "free_credits":"INTEGER NOT NULL DEFAULT 50", "purchased_credits":"INTEGER NOT NULL DEFAULT 0", "month_key":"TEXT NOT NULL DEFAULT ''", "created_at":"DATETIME", "updated_at":"DATETIME", "unlimited":"INTEGER NOT NULL DEFAULT 0"},
+                    "credit_transactions": {"visitor_id":"TEXT", "tx_type":"TEXT DEFAULT 'adjustment'", "credits":"INTEGER NOT NULL DEFAULT 0", "amount":"TEXT", "currency":"TEXT", "package_id":"TEXT", "paypal_order_id":"TEXT", "paypal_capture_id":"TEXT", "status":"TEXT DEFAULT 'completed'", "note":"TEXT", "created_at":"DATETIME"},
+                    "paypal_orders": {"order_id":"TEXT", "visitor_id":"TEXT", "package_id":"TEXT", "credits":"INTEGER DEFAULT 0", "amount":"TEXT DEFAULT '0.00'", "currency":"TEXT DEFAULT 'USD'", "status":"TEXT DEFAULT 'created'", "capture_id":"TEXT", "created_at":"DATETIME", "captured_at":"DATETIME"},
+                }.items():
+                    existing={r[1] for r in conn.execute(text(f"PRAGMA table_info({table})"))}
+                    for col, typ in fields.items():
+                        if col not in existing: conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {typ}"))
     except Exception:
         log.exception("database schema migration failed")
 
 
+def make_user_code(db):
+    for _ in range(30):
+        code = str(secrets.randbelow(9_000_000_000) + 1_000_000_000)
+        if not db.scalar(select(CreditAccount).where(CreditAccount.user_code == code)):
+            return code
+    raise RuntimeError("Could not allocate a unique 10-digit user ID")
+
+def backfill_user_codes():
+    db = Session()
+    try:
+        rows = db.scalars(select(CreditAccount).where((CreditAccount.user_code == None) | (CreditAccount.user_code == ""))).all()
+        for account in rows: account.user_code = make_user_code(db)
+        if rows: db.commit()
+    except Exception:
+        db.rollback(); log.exception("user code backfill failed")
+    finally: db.close()
+
 migrate_credit_columns()
+
+# Existing accounts from older QuickDL versions receive a stable 10-digit ID.
+backfill_user_codes()
+try:
+    with engine.begin() as conn:
+        if conn.dialect.name == "postgresql":
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_credit_accounts_user_code ON credit_accounts(user_code)"))
+        elif conn.dialect.name == "sqlite":
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_credit_accounts_user_code ON credit_accounts(user_code)"))
+except Exception:
+    log.exception("user code unique index could not be created")
 
 UA = os.getenv(
     "DOWNLOADER_USER_AGENT",
@@ -226,33 +234,25 @@ def ensure_credit_account(db, visitor_id):
     if not visitor_id:
         raise ValueError("visitor_id is required")
     month = current_month_key()
-    monthly_free = int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS)
+    monthly_free = max(0, int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS))
     now = datetime.now(timezone.utc)
     account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
     if not account:
+        account = CreditAccount(visitor_id=visitor_id, user_code=make_user_code(db), free_credits=monthly_free, purchased_credits=0, month_key=month, created_at=now, updated_at=now, unlimited=False)
+        db.add(account)
         try:
-            account = CreditAccount(
-                visitor_id=visitor_id,
-                free_credits=monthly_free,
-                purchased_credits=0,
-                month_key=month,
-                created_at=now,
-                updated_at=now,
-                unlimited=False,
-            )
-            db.add(account)
             db.flush()
         except IntegrityError:
-            # Another request may have created the account at the same time.
             db.rollback()
             account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
-            if not account:
-                raise
-    elif account.month_key != month:
+            if not account: raise
+    if not account.user_code:
+        account.user_code = make_user_code(db)
+    if account.month_key != month:
         account.free_credits = monthly_free
         account.month_key = month
-        account.updated_at = now
-        db.flush()
+    account.updated_at = now
+    db.flush()
     return account
 
 
@@ -308,7 +308,7 @@ def account_payload(visitor_id):
     try:
         account = ensure_credit_account(db, visitor_id)
         db.commit()
-        return {"free_credits": account.free_credits, "purchased_credits": account.purchased_credits, "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS), "video_cost": int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST), "month": account.month_key}
+        return {"user_code": account.user_code, "free_credits": account.free_credits, "purchased_credits": account.purchased_credits, "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS), "video_cost": int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST), "month": account.month_key}
     finally:
         db.close()
 
@@ -852,7 +852,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="17.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="18.0.0", lifespan=lifespan)
 
 @app.exception_handler(Exception)
 async def unhandled_exception(request: Request, exc: Exception):
@@ -883,7 +883,7 @@ def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "17.0.0", "worker": WORKER_HEARTBEAT}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "18.0.0", "worker": WORKER_HEARTBEAT}
     finally: db.close()
 
 class DownloadRequest(BaseModel):
@@ -1044,7 +1044,7 @@ def api_account(vexdou_visitor: str | None = Cookie(default=None)):
     data = account_payload(visitor)
     out = JSONResponse({"ok":True, **data})
     if not vexdou_visitor:
-        out.set_cookie("vexdou_visitor", visitor, max_age=31536000, httponly=True, samesite="lax", secure=True, path="/")
+        out.set_cookie("vexdou_visitor", visitor, max_age=31536000, httponly=True, samesite="lax", secure=True, path="/", domain=None)
     return out
 
 @app.get("/api/credits/packages")
@@ -1071,6 +1071,7 @@ def credits_health(vexdou_visitor: str | None = Cookie(default=None)):
             "ok": True,
             "has_cookie": bool(vexdou_visitor),
             "visitor_id_length": len(visitor),
+            "user_code": account.user_code,
             "credits": credit_balance(account),
             "unlimited": bool(getattr(account, "unlimited", False)),
             "month": account.month_key,
@@ -1079,7 +1080,7 @@ def credits_health(vexdou_visitor: str | None = Cookie(default=None)):
         db.commit()
         out = JSONResponse(payload)
         if not vexdou_visitor:
-            out.set_cookie("vexdou_visitor", visitor, max_age=31536000, httponly=True, samesite="lax", secure=True, path="/")
+            out.set_cookie("vexdou_visitor", visitor, max_age=31536000, httponly=True, samesite="lax", secure=True, path="/", domain=None)
         return out
     except Exception as exc:
         db.rollback()
@@ -1305,7 +1306,7 @@ def admin_system(request: Request):
         for st in ("queued","downloading","completed","failed"):
             counts[st]=db.scalar(select(func.count()).select_from(Download).where(Download.status==st)) or 0
         return {
-            "version":"17.0.0",
+            "version":"18.0.0",
             "python":os.sys.version.split()[0],
             "yt_dlp":getattr(yt_dlp,"version",{}).get("version") if isinstance(getattr(yt_dlp,"version",None),dict) else str(getattr(yt_dlp,"version","unknown")),
             "ffmpeg":shutil.which("ffmpeg") or "missing",
@@ -1425,10 +1426,22 @@ def admin_audit(request: Request, limit: int = 100):
     finally: db.close()
 
 class AdminCreditAction(BaseModel):
-    visitor_id: str
+    visitor_id: str = ""
+    user_code: str = ""
     credits: int = 0
     unlimited: bool | None = None
     note: str = "Admin adjustment"
+
+def resolve_admin_visitor(db, data: AdminCreditAction):
+    code=(data.user_code or "").strip()
+    visitor=(data.visitor_id or "").strip()
+    if code:
+        if not re.fullmatch(r"\d{10}", code): raise HTTPException(400, "User ID must be exactly 10 digits")
+        account=db.scalar(select(CreditAccount).where(CreditAccount.user_code==code))
+        if not account: raise HTTPException(404, "User ID not found")
+        return account.visitor_id
+    if not visitor or len(visitor)>128: raise HTTPException(400, "Enter a valid user ID")
+    return visitor
 
 @app.get("/api/admin/credit-users")
 def admin_credit_users(request: Request, q: str = "", limit: int = 100):
@@ -1443,10 +1456,21 @@ def admin_credit_users(request: Request, q: str = "", limit: int = 100):
             if r.created_at and (not x.get("last_seen") or r.created_at>x["last_seen"]): x["last_seen"]=r.created_at
         q=(q or "").strip().lower(); items=[]
         for a in accounts:
-            if q and q not in a.visitor_id.lower(): continue
+            if q and q not in a.visitor_id.lower() and q not in str(a.user_code or "").lower(): continue
             c=counts.get(a.visitor_id,{})
-            items.append({"visitor_id":a.visitor_id,"credits":credit_balance(a),"free_credits":a.free_credits,"purchased_credits":a.purchased_credits,"unlimited":bool(getattr(a,"unlimited",False)),"last_seen":c.get("last_seen").isoformat() if c.get("last_seen") else None,"downloads":c.get("downloads",0),"completed":c.get("completed",0),"failed":c.get("failed",0),"updated_at":a.updated_at.isoformat() if a.updated_at else None,"last_seen":c.get("last_seen").isoformat() if c.get("last_seen") else None})
+            items.append({"visitor_id":a.visitor_id,"user_code":a.user_code,"credits":credit_balance(a),"free_credits":a.free_credits,"purchased_credits":a.purchased_credits,"unlimited":bool(getattr(a,"unlimited",False)),"last_seen":c.get("last_seen").isoformat() if c.get("last_seen") else None,"downloads":c.get("downloads",0),"completed":c.get("completed",0),"failed":c.get("failed",0),"updated_at":a.updated_at.isoformat() if a.updated_at else None,"last_seen":c.get("last_seen").isoformat() if c.get("last_seen") else None})
         return {"items":items[:limit]}
+    finally: db.close()
+
+@app.get("/api/admin/user-code/{user_code}")
+def admin_user_by_code(user_code: str, request: Request):
+    require_admin(request)
+    if not re.fullmatch(r"\d{10}", user_code): raise HTTPException(400, "User ID must be exactly 10 digits")
+    db=Session()
+    try:
+        a=db.scalar(select(CreditAccount).where(CreditAccount.user_code==user_code))
+        if not a: raise HTTPException(404, "User not found")
+        return admin_user_detail(a.visitor_id, request)
     finally: db.close()
 
 @app.get("/api/admin/user/{visitor_id}")
@@ -1459,6 +1483,8 @@ def admin_user_detail(visitor_id: str, request: Request):
         downloads=db.scalars(select(Download).where(Download.visitor_id==visitor_id).order_by(Download.created_at.desc()).limit(100)).all()
         return {
             "account": account_payload(visitor_id),
+            "user_code": a.user_code,
+            "visitor_id": visitor_id,
             "transactions":[{"type":r.tx_type,"credits":r.credits,"amount":r.amount,"currency":r.currency,"package_id":r.package_id,"status":r.status,"note":r.note,"created_at":r.created_at.isoformat() if r.created_at else None} for r in rows],
             "downloads":[{"job_id":r.job_id,"url":r.url,"title":r.title,"platform":platform(r.url),"status":r.status,"error":r.error,"created_at":r.created_at.isoformat() if r.created_at else None} for r in downloads],
         }
@@ -1467,18 +1493,18 @@ def admin_user_detail(visitor_id: str, request: Request):
 @app.post("/api/admin/credits/grant")
 def admin_grant_credits(data: AdminCreditAction, request: Request):
     require_admin(request)
-    if len(data.visitor_id)>128 or data.credits<0: raise HTTPException(400,"Invalid credit adjustment")
+    if data.credits<0: raise HTTPException(400,"Invalid credit adjustment")
     db=Session()
     try:
-        a=ensure_credit_account(db,data.visitor_id)
+        target=resolve_admin_visitor(db,data); a=ensure_credit_account(db,target)
         if data.credits:
             a.purchased_credits += data.credits
-            db.add(CreditTransaction(visitor_id=data.visitor_id,tx_type="admin_grant",credits=data.credits,status="completed",note=data.note[:1000]))
+            db.add(CreditTransaction(visitor_id=target,tx_type="admin_grant",credits=data.credits,status="completed",note=data.note[:1000]))
         if data.unlimited is not None:
             a.unlimited=bool(data.unlimited)
-            db.add(CreditTransaction(visitor_id=data.visitor_id,tx_type="admin_unlimited",credits=0,status="completed",note=("Unlimited enabled" if a.unlimited else "Unlimited disabled")+" · "+data.note[:900]))
-        a.updated_at=datetime.now(timezone.utc); db.commit(); audit("admin_credit_adjustment",f"{data.visitor_id}: +{data.credits}, unlimited={data.unlimited}")
-        return {"ok":True,**account_payload(data.visitor_id)}
+            db.add(CreditTransaction(visitor_id=target,tx_type="admin_unlimited",credits=0,status="completed",note=("Unlimited enabled" if a.unlimited else "Unlimited disabled")+" · "+data.note[:900]))
+        a.updated_at=datetime.now(timezone.utc); db.commit(); audit("admin_credit_adjustment",f"{target}: +{data.credits}, unlimited={data.unlimited}")
+        return {"ok":True,**account_payload(target)}
     finally: db.close()
 
 @app.post("/api/admin/credits/revoke")
@@ -1487,18 +1513,18 @@ def admin_revoke_credits(data: AdminCreditAction, request: Request):
     if data.credits<0: raise HTTPException(400,"Invalid amount")
     db=Session()
     try:
-        a=ensure_credit_account(db,data.visitor_id); amount=min(data.credits,max(0,int(a.purchased_credits or 0))); a.purchased_credits-=amount; a.updated_at=datetime.now(timezone.utc)
-        db.add(CreditTransaction(visitor_id=data.visitor_id,tx_type="admin_revoke",credits=-amount,status="completed",note=data.note[:1000])); db.commit(); audit("admin_credit_revoke",f"{data.visitor_id}: -{amount}")
-        return {"ok":True,**account_payload(data.visitor_id)}
+        target=resolve_admin_visitor(db,data); a=ensure_credit_account(db,target); amount=min(data.credits,max(0,int(a.purchased_credits or 0))); a.purchased_credits-=amount; a.updated_at=datetime.now(timezone.utc)
+        db.add(CreditTransaction(visitor_id=target,tx_type="admin_revoke",credits=-amount,status="completed",note=data.note[:1000])); db.commit(); audit("admin_credit_revoke",f"{target}: -{amount}")
+        return {"ok":True,**account_payload(target)}
     finally: db.close()
 
 @app.post("/api/admin/credits/reset")
 def admin_reset_credits(data: AdminCreditAction, request: Request):
     require_admin(request); db=Session()
     try:
-        a=ensure_credit_account(db,data.visitor_id); old=credit_balance(a) or 0; a.free_credits=MONTHLY_FREE_CREDITS; a.purchased_credits=0; a.unlimited=False; a.updated_at=datetime.now(timezone.utc)
-        db.add(CreditTransaction(visitor_id=data.visitor_id,tx_type="admin_reset",credits=-int(old),status="completed",note=data.note[:1000])); db.commit(); audit("admin_credit_reset",data.visitor_id)
-        return {"ok":True,**account_payload(data.visitor_id)}
+        target=resolve_admin_visitor(db,data); a=ensure_credit_account(db,target); old=credit_balance(a) or 0; a.free_credits=MONTHLY_FREE_CREDITS; a.purchased_credits=0; a.unlimited=False; a.updated_at=datetime.now(timezone.utc)
+        db.add(CreditTransaction(visitor_id=target,tx_type="admin_reset",credits=-int(old),status="completed",note=data.note[:1000])); db.commit(); audit("admin_credit_reset",target)
+        return {"ok":True,**account_payload(target)}
     finally: db.close()
 
 @app.get("/api/admin/revenue")
