@@ -55,3 +55,9 @@ A Dockerfile is included with FFmpeg and Node.js so audio conversion and YouTube
 4. After end-to-end sandbox testing, switch the server to `PAYPAL_MODE=live` and use the live credentials.
 
 The frontend never sends the price as the source of truth. The backend maps the package ID to the fixed server-side package price and creates the PayPal order from that value.
+
+
+## PayPal LIVE configuration
+Use the same PayPal REST app's **Live** credentials for `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET`. Set `PAYPAL_MODE=live`, `PAYPAL_CURRENCY=USD`, and `PAYPAL_DOMAIN=https://quickdl.site`. The browser uses the PayPal v6 SDK with the public client ID; the client secret is used only on the server for REST OAuth and is never returned to the browser. PayPal's current v6 documentation recommends client-ID authentication for standard one-time checkout and reserves browser-safe client tokens primarily for Fastlane.
+
+Deployment check: `GET /paypal-api/health` returns a non-secret connectivity/configuration result and a PayPal debug ID when PayPal rejects the server credentials.

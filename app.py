@@ -188,26 +188,52 @@ def account_payload(visitor_id):
 def paypal_base():
     return "https://api-m.paypal.com" if PAYPAL_MODE == "live" else "https://api-m.sandbox.paypal.com"
 
-def paypal_token(browser_safe=False, origin=None):
+def paypal_token():
+    """Get a server-side OAuth access token for PayPal REST APIs.
+
+    The browser does NOT need a client token for our v6 checkout because
+    PayPal recommends client-id authentication for standard one-time checkout.
+    Keeping OAuth here also means the client secret never reaches the browser.
+    """
     if not PAYPAL_CLIENT_ID or not PAYPAL_CLIENT_SECRET:
-        raise HTTPException(503, "PayPal is not configured yet. Add PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET.")
-    if not browser_safe and PAYPAL_TOKEN_CACHE.get("token") and time.time() < PAYPAL_TOKEN_CACHE.get("expires_at", 0) - 60:
+        raise HTTPException(503, "PayPal is not configured. Set PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET.")
+    if PAYPAL_TOKEN_CACHE.get("token") and time.time() < PAYPAL_TOKEN_CACHE.get("expires_at", 0) - 60:
         return PAYPAL_TOKEN_CACHE["token"]
-    data = {"grant_type": "client_credentials"}
-    if browser_safe:
-        data["response_type"] = "client_token"
-        domain = PAYPAL_DOMAIN or origin or ""
-        if domain:
-            data["domains[]"] = domain
-    r = requests.post(f"{paypal_base()}/v1/oauth2/token", auth=(PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET), data=data, headers={"Accept":"application/json","Accept-Language":"en_US"}, timeout=30)
+
+    try:
+        r = requests.post(
+            f"{paypal_base()}/v1/oauth2/token",
+            auth=(PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET),
+            data={"grant_type": "client_credentials"},
+            headers={"Accept": "application/json", "Accept-Language": "en_US"},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        log.exception("PayPal OAuth network error")
+        raise HTTPException(502, "PayPal could not be reached. Try again in a moment.") from exc
+
+    try:
+        payload = r.json()
+    except ValueError:
+        payload = {}
+
     if r.status_code >= 400:
-        log.error("PayPal token error %s: %s", r.status_code, r.text[:500])
-        raise HTTPException(502, "PayPal authentication failed. Check your credentials and mode.")
-    payload = r.json()
+        name = str(payload.get("name") or "PAYPAL_AUTH_ERROR")
+        message = str(payload.get("message") or "PayPal rejected the API credentials.")
+        debug_id = str(payload.get("debug_id") or "")
+        log.error("PayPal OAuth failed status=%s name=%s message=%s debug_id=%s", r.status_code, name, message, debug_id)
+        safe = f"PayPal authentication failed ({name})."
+        if debug_id:
+            safe += f" Debug ID: {debug_id}"
+        raise HTTPException(502, safe)
+
     token = payload.get("access_token")
-    if not token: raise HTTPException(502, "PayPal did not return an access token.")
-    if not browser_safe:
-        PAYPAL_TOKEN_CACHE.update({"token": token, "expires_at": time.time() + int(payload.get("expires_in", 300))})
+    if not token:
+        log.error("PayPal OAuth returned no access_token: %s", payload)
+        raise HTTPException(502, "PayPal did not return an access token.")
+
+    expires = int(payload.get("expires_in") or 300)
+    PAYPAL_TOKEN_CACHE.update({"token": token, "expires_at": time.time() + expires})
     return token
 
 def paypal_json(method, path, payload=None, request_id=None):
@@ -695,7 +721,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="13.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="14.0.0", lifespan=lifespan)
 
 @app.get("/")
 def home():
@@ -714,14 +740,14 @@ def sw(): return FileResponse(BASE / "sw.js", media_type="application/javascript
 
 @app.get("/api/public-config")
 def public_config():
-    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance"),"credits_enabled":True,"monthly_free":MONTHLY_FREE_CREDITS,"video_cost":VIDEO_CREDIT_COST,"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET),"paypal_mode":PAYPAL_MODE,"currency":PAYPAL_CURRENCY}
+    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance"),"credits_enabled":True,"monthly_free":MONTHLY_FREE_CREDITS,"video_cost":VIDEO_CREDIT_COST,"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET),"paypal_mode":PAYPAL_MODE,"paypal_client_id":PAYPAL_CLIENT_ID,"currency":PAYPAL_CURRENCY}
 
 @app.get("/api/health")
 def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "13.0.0"}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "14.0.0"}
     finally: db.close()
 
 class DownloadRequest(BaseModel):
@@ -893,11 +919,17 @@ def credit_transactions(vexdou_visitor: str | None = Cookie(default=None), limit
         return {"items":[{"type":r.tx_type,"credits":r.credits,"amount":r.amount,"currency":r.currency,"package_id":r.package_id,"status":r.status,"note":r.note,"created_at":r.created_at.isoformat() if r.created_at else None} for r in rows]}
     finally: db.close()
 
-@app.get("/paypal-api/auth/browser-safe-client-token")
-def paypal_browser_token(request: Request):
-    origin = request.headers.get("origin") or (f"https://{request.headers.get('host')}" if request.headers.get('host') else "")
-    token = paypal_token(browser_safe=True, origin=origin)
-    return {"accessToken":token}
+@app.get("/paypal-api/health")
+def paypal_health():
+    """Non-secret PayPal connectivity check for deployment diagnostics."""
+    if not PAYPAL_CLIENT_ID or not PAYPAL_CLIENT_SECRET:
+        return {"ok": False, "configured": False, "mode": PAYPAL_MODE, "message": "Missing PayPal credentials."}
+    try:
+        token = paypal_token()
+        return {"ok": bool(token), "configured": True, "mode": PAYPAL_MODE, "client_id_suffix": PAYPAL_CLIENT_ID[-8:], "base_url": paypal_base()}
+    except HTTPException as exc:
+        detail = str(exc.detail)
+        return {"ok": False, "configured": True, "mode": PAYPAL_MODE, "client_id_suffix": PAYPAL_CLIENT_ID[-8:], "base_url": paypal_base(), "status_code": exc.status_code, "message": detail}
 
 @app.post("/paypal-api/checkout/orders/create")
 def paypal_create_order(data: PackageRequest, vexdou_visitor: str | None = Cookie(default=None)):
