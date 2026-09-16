@@ -254,6 +254,7 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", os.getenv("SPACEMAIL_PASSWORD", "")).
 EMAIL_FROM = os.getenv("EMAIL_FROM", "QuickDL <support@quickdl.site>").strip()
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
 RESEND_FROM = os.getenv("RESEND_FROM", EMAIL_FROM).strip()
+RESEND_REPLY_TO = os.getenv("RESEND_REPLY_TO", "").strip()
 EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "auto").strip().lower()
 AUTH_CODE_MINUTES = max(5, int(os.getenv("AUTH_CODE_MINUTES", "10")))
 PAYPAL_TOKEN_CACHE = {"token": None, "expires_at": 0}
@@ -674,6 +675,73 @@ def human_error(exc):
         return "The source took too long to respond. Please try again."
     return text[:700] or "Download failed. Please try another media URL."
 
+def public_og_video_fallback(job, url, kind, source_name):
+    """Public-only fallback for pages exposing a direct og:video URL.
+
+    This is deliberately limited to public page metadata. It does not submit
+    credentials or bypass private/login/DRM/CAPTCHA protections.
+    """
+    if kind != "video":
+        return None
+    headers={
+        "User-Agent":UA,
+        "Accept":"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language":"en-US,en;q=0.9",
+        "Cache-Control":"no-cache",
+    }
+    last=None
+    html=None
+    final_url=url
+    for attempt in range(3):
+        try:
+            if attempt: time.sleep(min(2**attempt,5))
+            r=_http_get(url,headers=headers,timeout=(15,35))
+            if r.status_code in (401,403,429):
+                last=RuntimeError(f"{source_name} returned HTTP {r.status_code}")
+                continue
+            r.raise_for_status()
+            html=r.text
+            final_url=str(getattr(r,"url",url))
+            break
+        except Exception as exc:
+            last=exc
+    if not html:
+        log.info("job=%s: %s public page fallback unavailable: %s",job,source_name,last)
+        return None
+    media_url=(
+        _extract_meta(html,"og:video:secure_url")
+        or _extract_meta(html,"og:video")
+        or _extract_meta(html,"twitter:player:stream")
+    )
+    if not media_url:
+        candidates=re.findall(r'https?://[^"\'<>\s]+?\.(?:mp4)(?:\?[^"\'<>\s]*)?',html,re.I)
+        if candidates: media_url=unescape(candidates[0]).replace("\\/","/").replace("&amp;","&")
+    if not media_url or not media_url.startswith(("http://","https://")):
+        return None
+    out=WORK/f"{job}.mp4"
+    max_bytes=int(setting_get("max_file_mb") or MAX_FILE_MB)*1024*1024
+    try:
+        with _http_get(media_url,headers={"User-Agent":UA,"Referer":final_url},timeout=(15,120),stream=True) as mr:
+            mr.raise_for_status()
+            total=0
+            with open(out,"wb") as fh:
+                for chunk in mr.iter_content(chunk_size=1024*256):
+                    if not chunk: continue
+                    total+=len(chunk)
+                    if total>max_bytes: raise RuntimeError("Media exceeds the configured file size limit")
+                    fh.write(chunk)
+        if not out.exists() or out.stat().st_size<1024:
+            out.unlink(missing_ok=True); return None
+        return {
+            "title":(_extract_meta(html,"og:title") or f"{source_name} Media")[:180],
+            "thumbnail":_extract_meta(html,"og:image"),
+            "webpage_url":url,
+        }
+    except Exception as exc:
+        out.unlink(missing_ok=True)
+        log.info("job=%s: %s public metadata fallback failed: %s",job,source_name,exc)
+        return None
+
 def ytdlp_options(job, kind, youtube_embedded=False, youtube_client=None):
     out = str(WORK / f"{job}.%(ext)s")
     opts = {
@@ -806,13 +874,22 @@ def process(job, kind):
                     job, p, attempt_no + 1, len(attempts), exc
                 )
 
-                # Public Instagram fallback after yt-dlp fails/rate-limits.
+                # Public metadata fallbacks after yt-dlp fails/rate-limits.
+                # Instagram keeps its specialized embed fallback; the generic
+                # OG fallback covers public pages that expose a direct MP4 URL.
                 if p == "instagram":
                     cleanup_job(job)
                     fallback_info = instagram_public_fallback(job, url, kind)
                     if fallback_info:
                         info = fallback_info
                         log.info("job=%s: Instagram public fallback succeeded", job)
+                        break
+                if p in {"facebook","tiktok","pinterest","x","snapchat"}:
+                    cleanup_job(job)
+                    fallback_info = public_og_video_fallback(job,url,kind,p.title())
+                    if fallback_info:
+                        info=fallback_info
+                        log.info("job=%s: %s public OG fallback succeeded",job,p)
                         break
 
                 # Stop trying redundant YouTube clients when the error is clearly
@@ -828,12 +905,15 @@ def process(job, kind):
                     time.sleep(min(2 * (attempt_no + 1), 6))
 
         if info is None:
-            # One final Instagram fallback if all extractor attempts failed.
+            # Final public-only fallback if all extractor attempts failed.
             if p == "instagram":
                 cleanup_job(job)
                 fallback_info = instagram_public_fallback(job, url, kind)
-                if fallback_info:
-                    info = fallback_info
+                if fallback_info: info = fallback_info
+            elif p in {"facebook","tiktok","pinterest","x","snapchat"}:
+                cleanup_job(job)
+                fallback_info = public_og_video_fallback(job,url,kind,p.title())
+                if fallback_info: info = fallback_info
             if info is None:
                 raise last_exc or RuntimeError("No media information was returned")
 
@@ -932,7 +1012,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="23.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="24.0.0", lifespan=lifespan)
 
 @app.exception_handler(Exception)
 async def unhandled_exception(request: Request, exc: Exception):
@@ -979,7 +1059,7 @@ def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "23.0.0", "worker": WORKER_HEARTBEAT}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "24.0.0", "worker": WORKER_HEARTBEAT}
     finally: db.close()
 
 class DownloadRequest(BaseModel):
@@ -999,6 +1079,32 @@ def serialize(row):
         "content_type": row.content_type,
         "error": row.error if status != "expired" else "This file is no longer stored on the server."
     }
+
+def reserve_download_job(visitor_id, job_id, url, kind, cost):
+    """Atomically reserve credits and enqueue a download in one DB transaction."""
+    db=Session()
+    try:
+        account=ensure_credit_account(db,visitor_id)
+        if cost>0 and not bool(getattr(account,"unlimited",False)):
+            balance=credit_balance(account)
+            if balance < cost:
+                db.rollback()
+                return False,balance
+            free_used=min(account.free_credits,cost)
+            account.free_credits-=free_used
+            account.purchased_credits-=cost-free_used
+            account.updated_at=datetime.now(timezone.utc)
+            db.add(CreditTransaction(visitor_id=visitor_id,tx_type="download",credits=-cost,status="completed",note=f"Video download {job_id};free_used={free_used}"))
+        elif cost>0:
+            db.add(CreditTransaction(visitor_id=visitor_id,tx_type="download",credits=0,status="completed",note=f"Unlimited download {job_id}"))
+        db.add(Download(job_id=job_id,visitor_id=visitor_id,url=url,title="Preparing...",status="queued",kind=kind))
+        db.commit()
+        return True,credit_balance(account)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 @app.post("/api/download")
 def create_download(req: DownloadRequest, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
@@ -1021,24 +1127,13 @@ def create_download(req: DownloadRequest, request: Request, vexdou_visitor: str 
     # and does not consume another video credit.
     cost = int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST) if kind == "video" else 0
     try:
-        ok, remaining = (True, None) if cost <= 0 else debit_download_credits(visitor, job, cost)
+        ok, remaining = reserve_download_job(visitor, job, url, kind, cost)
     except Exception as exc:
         diagnostic_id = uuid.uuid4().hex[:12]
-        log.exception("credit check failed id=%s visitor=%s", diagnostic_id, visitor)
-        raise HTTPException(500, f"Could not initialize your credit account. Diagnostic ID: {diagnostic_id}") from exc
+        log.exception("atomic credit/job reservation failed id=%s visitor=%s", diagnostic_id, visitor)
+        raise HTTPException(500, f"Could not create the download safely. Diagnostic ID: {diagnostic_id}") from exc
     if not ok:
         raise HTTPException(402, detail={"code":"OUT_OF_CREDITS","message":"You are out of credits. Please buy more credits to continue.","credits":remaining or 0,"cost":cost})
-    db = Session()
-    try:
-        db.add(Download(job_id=job, visitor_id=visitor, url=url, title="Preparing...", status="queued", kind=kind))
-        db.commit()
-    except Exception:
-        db.rollback()
-        if cost > 0:
-            try: refund_download_credits(visitor, job, cost)
-            except Exception: log.exception("Could not refund credits after queue insert failure")
-        raise
-    finally: db.close()
     out = JSONResponse({"ok":True, "job_id":job, "status":"queued", "platform":platform(url), "kind":kind})
     if not vexdou_visitor or request.headers.get("x-quickdl-visitor"):
         _set_visitor_cookie(out, visitor)
@@ -1241,18 +1336,39 @@ def _email_sender_parts():
 
 def _send_via_resend(to_email, subject, html, text_body=None):
     if not RESEND_API_KEY:
-        raise RuntimeError("RESEND_API_KEY is missing")
-    r=requests.post(
-        "https://api.resend.com/emails",
-        headers={"Authorization":f"Bearer {RESEND_API_KEY}","Content-Type":"application/json"},
-        json={"from":RESEND_FROM,"to":[to_email],"subject":subject,"html":html,"text":text_body or "QuickDL notification"},
-        timeout=20,
-    )
+        raise RuntimeError("Resend API key is missing. Set RESEND_API_KEY in Render Environment Variables.")
+    payload={
+        "from": RESEND_FROM,
+        "to":[to_email],
+        "subject":subject,
+        "html":html,
+        "text":text_body or "QuickDL notification",
+    }
+    if RESEND_REPLY_TO:
+        payload["reply_to"]=[RESEND_REPLY_TO]
+    try:
+        r=requests.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization":f"Bearer {RESEND_API_KEY}","Content-Type":"application/json"},
+            json=payload,
+            timeout=25,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Could not reach Resend over HTTPS: {type(exc).__name__}: {exc}") from exc
+    try:
+        detail=r.json() if r.content else {}
+    except Exception:
+        detail={}
     if r.status_code >= 400:
-        try: detail=r.json()
-        except Exception: detail={}
-        raise RuntimeError(f"Resend HTTP {r.status_code}: {detail.get('message') or r.text[:300]}")
-    return r.json()
+        msg=detail.get("message") or detail.get("error") or r.text[:500]
+        low=str(msg).lower()
+        if r.status_code in (401,403):
+            if "api key" in low or "unauthorized" in low:
+                msg="Resend rejected the API key. Create a new Resend API key and replace RESEND_API_KEY in Render."
+            elif "domain" in low or "from" in low or "sender" in low:
+                msg=f"Resend rejected the sender '{RESEND_FROM}'. Verify quickdl.site in Resend and use a sender address from that verified domain."
+        raise RuntimeError(f"Resend HTTP {r.status_code}: {msg}")
+    return detail
 
 def _send_via_smtp(to_email, subject, html, text_body=None):
     if not SMTP_PASSWORD:
@@ -1300,6 +1416,17 @@ def smtp_health():
             result.update({"ok":r.status_code<400,"active_provider":"resend","http_status":r.status_code})
             if r.status_code>=400:
                 result["error"]=r.text[:400]
+            else:
+                data=r.json() if r.content else {}
+                domains=data.get("data") or []
+                sender=re.search(r"@([^>\s]+)",RESEND_FROM)
+                sender_domain=(sender.group(1).lower() if sender else "")
+                match=next((d for d in domains if str(d.get("name","")).lower()==sender_domain),None)
+                result["sender_domain"]=sender_domain
+                result["sender_domain_verified"]=bool(match and str(match.get("status","")).lower()=="verified")
+                if sender_domain and not result["sender_domain_verified"]:
+                    result["ok"]=False
+                    result["error"]=f"Resend API works, but sender domain {sender_domain} is not verified. Verify the domain in Resend and add its SPF/DKIM DNS records."
             return result
         except Exception as exc:
             result.update({"ok":False,"active_provider":"resend","error":f"{type(exc).__name__}: {exc}"[:500]})
@@ -1332,13 +1459,17 @@ def send_auth_email(to_email,subject,title,intro,code,label):
         _send_html_email(to_email,subject,html,f"{title}\n\n{intro}\n\n{label}: {code}\nExpires in {AUTH_CODE_MINUTES} minutes.")
     except Exception as exc:
         log.exception("email send failed to=%s",to_email)
-        raise HTTPException(502,"We could not send the email right now. Check your Render email delivery settings (Resend is recommended on Render Free).") from exc
+        # Surface a useful, non-secret provider diagnostic instead of hiding the
+        # actual Resend rejection behind a generic SMTP message.
+        msg=str(exc)[:700]
+        raise HTTPException(502, f"Email delivery failed: {msg}") from exc
 
-def send_google_welcome_email(to_email,name,user_code):
+def send_welcome_email(to_email,name,user_code,method="email"):
+
     safe_name=_safe_html(name or "there")
     safe_code=_safe_html(user_code)
-    html=f"""<!doctype html><html><body style='margin:0;background:#f4f6fb;font-family:Arial,sans-serif;color:#151925'><div style='max-width:620px;margin:36px auto;background:#fff;border:1px solid #e7e9ef;border-radius:24px;overflow:hidden'><div style='padding:30px;background:linear-gradient(135deg,#101321,#29224d);color:#fff'><div style='font-size:28px;font-weight:900'>Quick<span style='color:#8f82ff'>DL</span></div><div style='margin-top:8px;color:#cbd0e2;font-size:13px'>Your public-media workspace is ready.</div></div><div style='padding:32px'><div style='font-size:13px;color:#6b7280'>WELCOME TO QUICKDL</div><h1 style='margin:8px 0 12px;font-size:30px'>Welcome, {safe_name}! 👋</h1><p style='color:#687083;line-height:1.7'>Your Google account has been connected successfully. You can now use QuickDL with your account identity and keep your downloads and credit balance associated with your account.</p><div style='margin:22px 0;padding:18px 20px;border-radius:16px;background:#f3f2ff;border:1px solid #e4e0ff'><div style='font-size:11px;color:#73798a;font-weight:800'>YOUR QUICKDL USER ID</div><div style='font-size:30px;letter-spacing:5px;font-weight:900;color:#5d54dc;margin-top:6px'>{safe_code}</div></div><p style='font-size:12px;color:#8a90a0;line-height:1.6'>Keep this User ID if you ever need support. QuickDL will never ask you for your Google password.</p></div></div></body></html>"""
-    _send_html_email(to_email,"Welcome to QuickDL — your account is ready",html,f"Welcome to QuickDL, {name or 'there'}! Your account is connected. Your User ID is {user_code}.")
+    html=f"""<!doctype html><html><body style='margin:0;background:#f4f6fb;font-family:Arial,sans-serif;color:#151925'><div style='max-width:620px;margin:36px auto;background:#fff;border:1px solid #e7e9ef;border-radius:24px;overflow:hidden'><div style='padding:30px;background:linear-gradient(135deg,#101321,#29224d);color:#fff'><div style='font-size:28px;font-weight:900'>Quick<span style='color:#8f82ff'>DL</span></div><div style='margin-top:8px;color:#cbd0e2;font-size:13px'>Your public-media workspace is ready.</div></div><div style='padding:32px'><div style='font-size:13px;color:#6b7280'>WELCOME TO QUICKDL</div><h1 style='margin:8px 0 12px;font-size:30px'>Welcome, {safe_name}! 👋</h1><p style='color:#687083;line-height:1.7'>Your account has been verified successfully. You can now use QuickDL and keep your downloads and credit balance connected to your account.</p><div style='margin:22px 0;padding:18px 20px;border-radius:16px;background:#f3f2ff;border:1px solid #e4e0ff'><div style='font-size:11px;color:#73798a;font-weight:800'>YOUR QUICKDL USER ID</div><div style='font-size:30px;letter-spacing:5px;font-weight:900;color:#5d54dc;margin-top:6px'>{safe_code}</div></div><p style='font-size:12px;color:#8a90a0;line-height:1.6'>Keep this User ID if you ever need support. QuickDL will never ask you for your Google password.</p></div></div></body></html>"""
+    _send_html_email(to_email,"Welcome to QuickDL — your account is ready",html,f"Welcome to QuickDL, {name or 'there'}! Your account is ready. Your User ID is {user_code}.")
 
 def login_enabled(): return setting_bool("login_enabled")
 
@@ -1374,7 +1505,7 @@ def email_signup_verify(data: EmailCodeRequest, request: Request, vexdou_visitor
         welcome_sent=False
         if not account.welcome_email_sent_at and (RESEND_API_KEY or SMTP_PASSWORD):
             try:
-                send_google_welcome_email(email, account.auth_name or email.split("@")[0], account.user_code)
+                send_welcome_email(email, account.auth_name or email.split("@")[0], account.user_code, "email")
                 db2=Session()
                 try:
                     fresh=db2.get(CreditAccount,account.id)
@@ -1464,7 +1595,7 @@ def google_login(data: GoogleLoginRequest, request: Request, vexdou_visitor: str
             db.commit()
             if first_google_login and not target.google_welcome_sent_at and (RESEND_API_KEY or SMTP_PASSWORD):
                 try:
-                    send_google_welcome_email(email,name,target.user_code)
+                    send_welcome_email(email,name,target.user_code, "google")
                     db2=Session()
                     try:
                         fresh=db2.get(CreditAccount,target.id)
@@ -1485,7 +1616,7 @@ def google_login(data: GoogleLoginRequest, request: Request, vexdou_visitor: str
         db.commit()
         if first_google_login and not current.google_welcome_sent_at and (RESEND_API_KEY or SMTP_PASSWORD):
             try:
-                send_google_welcome_email(email,name,current.user_code)
+                send_welcome_email(email,name,current.user_code, "google")
                 db2=Session()
                 try:
                     fresh=db2.get(CreditAccount,current.id)
@@ -1761,7 +1892,7 @@ def admin_system(request: Request):
         for st in ("queued","downloading","completed","failed"):
             counts[st]=db.scalar(select(func.count()).select_from(Download).where(Download.status==st)) or 0
         return {
-            "version":"23.0.0",
+            "version":"24.0.0",
             "python":os.sys.version.split()[0],
             "yt_dlp":getattr(yt_dlp,"version",{}).get("version") if isinstance(getattr(yt_dlp,"version",None),dict) else str(getattr(yt_dlp,"version","unknown")),
             "ffmpeg":shutil.which("ffmpeg") or "missing",
@@ -1783,6 +1914,12 @@ def admin_system(request: Request):
 def admin_email_health(request: Request):
     require_admin(request)
     return smtp_health()
+
+@app.get("/api/email/health")
+def public_email_health():
+    """Safe deployment diagnostic; never returns API keys or mailbox passwords."""
+    h=smtp_health()
+    return {k:h.get(k) for k in ("ok","provider","active_provider","resend_configured","http_status","error") if k in h}
 
 @app.get("/admin18", response_class=HTMLResponse)
 def admin_page(request: Request):
@@ -1844,7 +1981,7 @@ def admin_overview(request: Request):
             status[r.status] = status.get(r.status, 0) + 1
             p = platform(r.url); plats[p] = plats.get(p, 0) + 1
         users = len({r.visitor_id for r in rows})
-        return {"version":"23.0.0-admin", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
+        return {"version":"24.0.0-admin", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
     finally: db.close()
 
 @app.get("/api/admin/users")
