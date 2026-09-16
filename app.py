@@ -17,8 +17,8 @@ from html import unescape
 from fastapi import FastAPI, HTTPException, Cookie, Request, Header
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from pydantic import BaseModel, HttpUrl
-from sqlalchemy import create_engine, String, Text, Integer, DateTime, select, update, delete
-from sqlalchemy.exc import IntegrityError, OperationalError, func
+from sqlalchemy import create_engine, String, Text, Integer, DateTime, select, update, delete, func
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from contextlib import asynccontextmanager
 
