@@ -250,6 +250,9 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
 SMTP_USER = os.getenv("SMTP_USER", os.getenv("SPACEMAIL_USER", "support@quickdl.site")).strip()
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", os.getenv("SPACEMAIL_PASSWORD", "")).strip()
 EMAIL_FROM = os.getenv("EMAIL_FROM", "QuickDL <support@quickdl.site>").strip()
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
+RESEND_FROM = os.getenv("RESEND_FROM", EMAIL_FROM).strip()
+EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "auto").strip().lower()
 AUTH_CODE_MINUTES = max(5, int(os.getenv("AUTH_CODE_MINUTES", "10")))
 PAYPAL_TOKEN_CACHE = {"token": None, "expires_at": 0}
 WORKER_HEARTBEAT = {"started_at": None, "last_loop": None, "last_job": None, "last_error": None, "jobs_completed": 0, "jobs_failed": 0}
@@ -268,43 +271,60 @@ def current_month_key():
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
 def ensure_credit_account(db, visitor_id):
-    if not visitor_id:
-        raise ValueError("visitor_id is required")
+    """Return/create the visitor credit account without poisoning the caller transaction.
+
+    Account creation is isolated in a SAVEPOINT. If another request wins the race,
+    we re-read the existing account instead of rolling back the whole DB session.
+    This path is intentionally defensive because every download depends on it.
+    """
+    if not visitor_id or not re.fullmatch(r"[a-f0-9]{32}", str(visitor_id)):
+        raise ValueError("invalid visitor_id")
     month = current_month_key()
     monthly_free = max(0, int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS))
     now = datetime.now(timezone.utc)
+
     account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
-    if not account:
-        for _ in range(8):
-            candidate = CreditAccount(visitor_id=visitor_id, user_code=make_user_code(db), free_credits=monthly_free, purchased_credits=0, month_key=month, created_at=now, updated_at=now, unlimited=False)
+    if account is None:
+        for _ in range(12):
+            code = str(secrets.randbelow(9_000_000_000) + 1_000_000_000)
             try:
                 with db.begin_nested():
+                    candidate = CreditAccount(
+                        visitor_id=visitor_id, user_code=code,
+                        free_credits=monthly_free, purchased_credits=0,
+                        month_key=month, created_at=now, updated_at=now, unlimited=False
+                    )
                     db.add(candidate)
                     db.flush()
                 account = candidate
                 break
             except IntegrityError:
                 account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
-                if account:
+                if account is not None:
                     break
-        if not account:
-            raise RuntimeError("Could not create a stable QuickDL credit account")
+        if account is None:
+            raise RuntimeError("credit account could not be created; check the credit_accounts table and unique indexes")
+
     if not account.user_code:
-        assigned = False
-        for _ in range(8):
+        for _ in range(12):
+            code = str(secrets.randbelow(9_000_000_000) + 1_000_000_000)
             try:
                 with db.begin_nested():
-                    account.user_code = make_user_code(db)
+                    account.user_code = code
                     db.flush()
-                assigned = True
                 break
             except IntegrityError:
                 db.refresh(account)
-        if not assigned:
-            raise RuntimeError("Could not assign a stable QuickDL user ID")
+        if not account.user_code:
+            raise RuntimeError("credit account has no public user ID")
+
     if account.month_key != month:
         account.free_credits = monthly_free
         account.month_key = month
+    if account.free_credits is None:
+        account.free_credits = monthly_free
+    if account.purchased_credits is None:
+        account.purchased_credits = 0
     account.updated_at = now
     db.flush()
     return account
@@ -909,7 +929,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="21.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="22.0.0", lifespan=lifespan)
 
 @app.exception_handler(Exception)
 async def unhandled_exception(request: Request, exc: Exception):
@@ -949,7 +969,7 @@ def sw(): return FileResponse(BASE / "sw.js", media_type="application/javascript
 
 @app.get("/api/public-config")
 def public_config():
-    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance"),"credits_enabled":True,"monthly_free":int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS),"video_cost":int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST),"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET),"paypal_mode":PAYPAL_MODE,"paypal_client_id":PAYPAL_CLIENT_ID,"currency":PAYPAL_CURRENCY,"google_login_enabled":setting_bool("google_login_enabled"),"google_client_id":GOOGLE_CLIENT_ID,"login_enabled":setting_bool("login_enabled"),"email_auth_configured":bool(SMTP_PASSWORD),"ads_enabled":setting_bool("ads_enabled"),"ads_text":setting_get("ads_text"),"ads_url":setting_get("ads_url"),"ads_button_text":setting_get("ads_button_text")}
+    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance"),"credits_enabled":True,"monthly_free":int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS),"video_cost":int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST),"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET),"paypal_mode":PAYPAL_MODE,"paypal_client_id":PAYPAL_CLIENT_ID,"currency":PAYPAL_CURRENCY,"google_login_enabled":setting_bool("google_login_enabled"),"google_client_id":GOOGLE_CLIENT_ID,"login_enabled":setting_bool("login_enabled"),"email_auth_configured":bool(SMTP_PASSWORD or RESEND_API_KEY),"email_provider":EMAIL_PROVIDER,"ads_enabled":setting_bool("ads_enabled"),"ads_text":setting_get("ads_text"),"ads_url":setting_get("ads_url"),"ads_button_text":setting_get("ads_button_text")}
 
 @app.get("/api/health")
 def health():
@@ -1213,57 +1233,89 @@ def _email_sender_parts():
         return m.group(1).strip() or "QuickDL", m.group(2).strip()
     return "QuickDL", EMAIL_FROM
 
-def _send_html_email(to_email, subject, html, text_body=None):
+def _send_via_resend(to_email, subject, html, text_body=None):
+    if not RESEND_API_KEY:
+        raise RuntimeError("RESEND_API_KEY is missing")
+    r=requests.post(
+        "https://api.resend.com/emails",
+        headers={"Authorization":f"Bearer {RESEND_API_KEY}","Content-Type":"application/json"},
+        json={"from":RESEND_FROM,"to":[to_email],"subject":subject,"html":html,"text":text_body or "QuickDL notification"},
+        timeout=20,
+    )
+    if r.status_code >= 400:
+        try: detail=r.json()
+        except Exception: detail={}
+        raise RuntimeError(f"Resend HTTP {r.status_code}: {detail.get('message') or r.text[:300]}")
+    return r.json()
+
+def _send_via_smtp(to_email, subject, html, text_body=None):
     if not SMTP_PASSWORD:
         raise RuntimeError("SMTP_PASSWORD is missing")
-    msg=EmailMessage()
-    display, sender=_email_sender_parts()
-    msg["From"]=f"{display} <{sender}>"
-    msg["To"]=to_email
-    msg["Subject"]=subject
-    msg.set_content(text_body or "This message contains HTML content. Please open it in an HTML-capable mail client.")
-    msg.add_alternative(html, subtype="html")
-
+    msg=EmailMessage(); display,sender=_email_sender_parts()
+    msg["From"]=f"{display} <{sender}>"; msg["To"]=to_email; msg["Subject"]=subject
+    msg.set_content(text_body or "This message contains HTML content."); msg.add_alternative(html, subtype="html")
     ports=[]
-    configured=SMTP_PORT
-    for port in ([configured,587] if configured==465 else [configured,465]):
+    for port in ([SMTP_PORT,587,465] if SMTP_PORT not in (465,587) else [SMTP_PORT,587 if SMTP_PORT==465 else 465]):
         if port not in ports: ports.append(port)
     last=None
     for port in ports:
         try:
             ctx=ssl.create_default_context()
             if port==465:
-                with smtplib.SMTP_SSL(SMTP_HOST,port,context=ctx,timeout=25) as smtp:
+                with smtplib.SMTP_SSL(SMTP_HOST,port,context=ctx,timeout=18) as smtp:
                     smtp.ehlo(); smtp.login(SMTP_USER,SMTP_PASSWORD); smtp.send_message(msg)
             else:
-                with smtplib.SMTP(SMTP_HOST,port,timeout=25) as smtp:
+                with smtplib.SMTP(SMTP_HOST,port,timeout=18) as smtp:
                     smtp.ehlo(); smtp.starttls(context=ctx); smtp.ehlo(); smtp.login(SMTP_USER,SMTP_PASSWORD); smtp.send_message(msg)
-            log.info("email delivered host=%s port=%s to=%s subject=%s", SMTP_HOST,port,to_email,subject)
-            return
+            return {"provider":"smtp","host":SMTP_HOST,"port":port}
         except (smtplib.SMTPAuthenticationError, smtplib.SMTPRecipientsRefused) as exc:
-            last=exc
-            # Authentication/recipient errors are deterministic; do not retry another TLS mode.
-            break
+            raise RuntimeError(f"SMTP authentication/recipient error on port {port}: {exc}") from exc
         except Exception as exc:
-            last=exc
-            log.warning("SMTP attempt failed host=%s port=%s: %s", SMTP_HOST,port,exc)
+            last=exc; log.warning("SMTP attempt failed host=%s port=%s: %s",SMTP_HOST,port,exc)
+    
+    if isinstance(last, TimeoutError) or "timed out" in str(last).lower():
+        raise RuntimeError("SMTP connection timed out. Render Free blocks outbound SMTP ports 25/465/587; configure RESEND_API_KEY or use a paid Render service for direct Spacemail SMTP.")
     raise RuntimeError(f"SMTP delivery failed: {type(last).__name__}: {last}")
 
+def _send_html_email(to_email, subject, html, text_body=None):
+    # Render Free blocks outbound SMTP 25/465/587. Prefer an HTTPS mail API there.
+    if EMAIL_PROVIDER in {"resend","auto"} and RESEND_API_KEY:
+        return _send_via_resend(to_email,subject,html,text_body)
+    if EMAIL_PROVIDER=="resend":
+        raise RuntimeError("EMAIL_PROVIDER=resend but RESEND_API_KEY is missing")
+    return _send_via_smtp(to_email,subject,html,text_body)
+
+
 def smtp_health():
+    result={"provider":EMAIL_PROVIDER,"resend_configured":bool(RESEND_API_KEY),"smtp_configured":bool(SMTP_PASSWORD),"host":SMTP_HOST,"port":SMTP_PORT,"user":SMTP_USER}
+    if EMAIL_PROVIDER in {"resend","auto"} and RESEND_API_KEY:
+        try:
+            r=requests.get("https://api.resend.com/domains",headers={"Authorization":f"Bearer {RESEND_API_KEY}"},timeout=12)
+            result.update({"ok":r.status_code<400,"active_provider":"resend","http_status":r.status_code})
+            if r.status_code>=400:
+                result["error"]=r.text[:400]
+            return result
+        except Exception as exc:
+            result.update({"ok":False,"active_provider":"resend","error":f"{type(exc).__name__}: {exc}"[:500]})
+            return result
     if not SMTP_PASSWORD:
-        return {"configured":False,"ok":False,"host":SMTP_HOST,"port":SMTP_PORT,"user":SMTP_USER,"error":"SMTP_PASSWORD is missing"}
+        result.update({"ok":False,"active_provider":"smtp","error":"SMTP_PASSWORD is missing"}); return result
     try:
         ctx=ssl.create_default_context()
         if SMTP_PORT==465:
-            with smtplib.SMTP_SSL(SMTP_HOST,SMTP_PORT,context=ctx,timeout=15) as smtp:
+            with smtplib.SMTP_SSL(SMTP_HOST,SMTP_PORT,context=ctx,timeout=10) as smtp:
                 smtp.ehlo(); smtp.login(SMTP_USER,SMTP_PASSWORD)
         else:
-            with smtplib.SMTP(SMTP_HOST,SMTP_PORT,timeout=15) as smtp:
+            with smtplib.SMTP(SMTP_HOST,SMTP_PORT,timeout=10) as smtp:
                 smtp.ehlo(); smtp.starttls(context=ctx); smtp.ehlo(); smtp.login(SMTP_USER,SMTP_PASSWORD)
-        return {"configured":True,"ok":True,"host":SMTP_HOST,"port":SMTP_PORT,"user":SMTP_USER}
+        result.update({"ok":True,"active_provider":"smtp"}); return result
     except Exception as exc:
-        log.exception("SMTP health check failed")
-        return {"configured":True,"ok":False,"host":SMTP_HOST,"port":SMTP_PORT,"user":SMTP_USER,"error":f"{type(exc).__name__}: {exc}"[:500]}
+        
+        msg=f"{type(exc).__name__}: {exc}"
+        if isinstance(exc, TimeoutError) or "timed out" in msg.lower():
+            msg="SMTP connection timed out. Render Free blocks outbound SMTP ports 25/465/587. Use Resend over HTTPS or a paid Render service."
+        result.update({"ok":False,"active_provider":"smtp","error":msg[:500]}); return result
+
 
 def _safe_html(value):
     return (value or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace('"',"&quot;")
@@ -1702,7 +1754,7 @@ def admin_system(request: Request):
             "paypal_configured":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET),
             "paypal_base":paypal_base(),
             "google_login_configured":bool(GOOGLE_CLIENT_ID),
-            "email_auth_configured":bool(SMTP_PASSWORD),
+            "email_auth_configured":bool(SMTP_PASSWORD or RESEND_API_KEY),"email_provider":EMAIL_PROVIDER,
             "settings":settings_all(),
         }
     finally: db.close()
@@ -1772,7 +1824,7 @@ def admin_overview(request: Request):
             status[r.status] = status.get(r.status, 0) + 1
             p = platform(r.url); plats[p] = plats.get(p, 0) + 1
         users = len({r.visitor_id for r in rows})
-        return {"version":"9.2.0-admin18", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
+        return {"version":"22.0.0-admin", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
     finally: db.close()
 
 @app.get("/api/admin/users")
