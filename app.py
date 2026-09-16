@@ -20,6 +20,12 @@ from pydantic import BaseModel, HttpUrl
 from sqlalchemy import create_engine, String, Text, Integer, DateTime, select, update, delete, func
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+try:
+    from google.oauth2 import id_token as google_id_token
+    from google.auth.transport import requests as google_requests
+except Exception:
+    google_id_token = None
+    google_requests = None
 from contextlib import asynccontextmanager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -1255,8 +1261,13 @@ class PackageRequest(BaseModel):
 @app.get("/api/account")
 def api_account(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
     visitor = _visitor_from(request, vexdou_visitor)
-    data = account_payload(visitor)
-    out = JSONResponse({"ok":True, **data})
+    try:
+        data = account_payload(visitor)
+    except Exception as exc:
+        diagnostic_id = uuid.uuid4().hex[:12]
+        log.exception("account bootstrap failed id=%s visitor=%s", diagnostic_id, visitor)
+        raise HTTPException(503, f"Account service is temporarily unavailable. Please try again. Reference: {diagnostic_id}") from exc
+    out = JSONResponse({"ok":True, **data}, headers={"Cache-Control":"no-store"})
     if not vexdou_visitor or request.headers.get("x-quickdl-visitor"):
         _set_visitor_cookie(out, visitor)
     return out
@@ -1583,6 +1594,16 @@ def email_login(data: EmailLoginRequest, request: Request, vexdou_visitor: str |
         db.commit(); queue_user_email(account.visitor_id, "QuickDL sign-in successful", "You signed in successfully", "Your QuickDL email account was just used to sign in. Your credits and account data remain connected.", "ACCOUNT SIGN-IN"); out=JSONResponse({"ok":True,**account_payload(account.visitor_id)}); _set_visitor_cookie(out,account.visitor_id); return out
     finally: db.close()
 
+@app.post("/api/auth/logout")
+def auth_logout(request: Request):
+    """End the browser identity session. The account remains safely stored in DB."""
+    out = JSONResponse({"ok": True, "signed_out": True})
+    out.delete_cookie("vexdou_visitor", path="/")
+    # Also expire common variants created by older deployments.
+    out.delete_cookie("vexdou_visitor", path="/", secure=True)
+    out.delete_cookie("vexdou_visitor", path="/", secure=False)
+    return out
+
 @app.post("/api/auth/forgot")
 def forgot_password(data: ForgotPasswordRequest):
     email=normalize_email(data.email); db=Session()
@@ -1614,13 +1635,20 @@ def google_login(data: GoogleLoginRequest, request: Request, vexdou_visitor: str
         raise HTTPException(503, "Google Login is not configured.")
     visitor = _visitor_from(request, vexdou_visitor)
     try:
-        r = requests.get("https://oauth2.googleapis.com/tokeninfo", params={"id_token": data.credential}, timeout=15)
-        if r.status_code >= 400:
-            raise ValueError("Google rejected the sign-in token")
-        info = r.json()
-        if info.get("aud") != GOOGLE_CLIENT_ID:
+        credential = (data.credential or "").strip()
+        if not credential or len(credential) > 12000:
+            raise ValueError("Missing or invalid Google credential")
+        info = None
+        if google_id_token is not None and google_requests is not None:
+            info = google_id_token.verify_oauth2_token(credential, google_requests.Request(), GOOGLE_CLIENT_ID)
+        else:
+            r = requests.get("https://oauth2.googleapis.com/tokeninfo", params={"id_token": credential}, timeout=15)
+            if r.status_code >= 400:
+                raise ValueError("Google rejected the sign-in token")
+            info = r.json()
+        if str(info.get("aud") or "") != GOOGLE_CLIENT_ID:
             raise ValueError("Google token audience does not match this site")
-        if info.get("iss") not in {"accounts.google.com", "https://accounts.google.com"}:
+        if str(info.get("iss") or "") not in {"accounts.google.com", "https://accounts.google.com"}:
             raise ValueError("Invalid Google token issuer")
         if str(info.get("email_verified", "")).lower() != "true":
             raise ValueError("Google email is not verified")
@@ -1628,7 +1656,7 @@ def google_login(data: GoogleLoginRequest, request: Request, vexdou_visitor: str
         email = str(info.get("email") or "").strip().lower()
         name = str(info.get("name") or email.split("@")[0] or "Google User")[:200]
         picture = str(info.get("picture") or "")[:2000]
-        if not sub or not email:
+        if not sub or not email or "@" not in email:
             raise ValueError("Google did not return a valid account")
     except Exception as exc:
         log.warning("Google sign-in verification failed: %s", exc)
@@ -1637,7 +1665,7 @@ def google_login(data: GoogleLoginRequest, request: Request, vexdou_visitor: str
     db = Session()
     try:
         current = ensure_credit_account(db, visitor)
-        existing = db.scalar(select(CreditAccount).where((CreditAccount.google_sub == sub) | (CreditAccount.google_email == email)).with_for_update())
+        existing = db.scalar(select(CreditAccount).where((CreditAccount.google_sub == sub) | (CreditAccount.google_email == email) | (CreditAccount.email == email)).with_for_update())
         login_open = setting_bool("google_login_enabled")
         if existing and existing.visitor_id != current.visitor_id:
             target = existing
