@@ -17,7 +17,8 @@ from html import unescape
 from fastapi import FastAPI, HTTPException, Cookie, Request, Header
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from pydantic import BaseModel, HttpUrl
-from sqlalchemy import create_engine, String, Text, Integer, DateTime, select, update, delete, func
+from sqlalchemy import create_engine, String, Text, Integer, DateTime, select, update, delete
+from sqlalchemy.exc import IntegrityError, OperationalError, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from contextlib import asynccontextmanager
 
@@ -319,6 +320,7 @@ def ensure_credit_account(db, visitor_id):
         if not account.user_code:
             raise RuntimeError("credit account has no user ID")
 
+    month_renewed = bool(account.month_key and account.month_key != month)
     if account.month_key != month:
         account.free_credits = monthly_free
         account.month_key = month
@@ -328,6 +330,11 @@ def ensure_credit_account(db, visitor_id):
         account.purchased_credits = 0
     account.updated_at = now
     db.flush()
+    if month_renewed:
+        try:
+            queue_user_email(visitor_id, "QuickDL monthly credits renewed", "Your monthly credits are ready", f"Your monthly free allowance has been renewed. You now have {monthly_free} free credits available for this month.", "MONTHLY CREDIT RENEWAL", "#20b486")
+        except Exception:
+            log.exception("monthly renewal email queue failed visitor=%s", visitor_id)
     return account
 
 
@@ -658,22 +665,20 @@ def human_error(exc):
     text = re.sub(r"\s+", " ", str(exc)).strip()
     low = text.lower()
     if "comfortable for some audiences" in low:
-        return "TikTok restricted this post. Only accessible/public media can be downloaded."
+        return "This media could not be processed right now."
     if "sign in" in low or "login required" in low or "authentication" in low:
-        return "This media requires sign-in or authorization."
-    if "private" in low:
-        return "This media is private or unavailable to the downloader."
-    if "drm" in low:
-        return "This media is DRM-protected and cannot be downloaded."
+        return "The source could not provide this media."
+    if "private" in low or "drm" in low:
+        return "The source could not provide this media."
     if "429" in low or "too many requests" in low or "rate-limit" in low:
-        return "The source temporarily rate-limited this server. Please try again later."
+        return "The source is temporarily busy. Please try again shortly."
     if "403" in low or "forbidden" in low:
-        return "The source refused automated access to this media."
+        return "The source is temporarily unavailable for this request."
     if "unsupported url" in low or "no suitable extractor" in low:
-        return "This URL is not supported by the media extractor."
+        return "This link could not be processed."
     if "timed out" in low or "timeout" in low:
         return "The source took too long to respond. Please try again."
-    return text[:700] or "Download failed. Please try another media URL."
+    return text[:700] or "Download failed. Please try again."
 
 def public_og_video_fallback(job, url, kind, source_name):
     """Public-only fallback for pages exposing a direct og:video URL.
@@ -824,6 +829,7 @@ def mark_failed(job, error):
         if job_kind == "video":
             try: refund_download_credits(visitor, job, int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST))
             except Exception: log.exception("Could not refund credits for failed job %s", job)
+        queue_user_email(visitor, "QuickDL download update", "Your download could not be completed", "The download did not finish successfully. The video credits reserved for this job were returned to your account.", "DOWNLOAD UPDATE", "#f05b75")
 
 def process(job, kind):
     cleanup_job(job)
@@ -853,7 +859,7 @@ def process(job, kind):
         elif p in {"facebook", "instagram", "pinterest", "tiktok", "x", "snapchat", "web"}:
             # Give every supported public source a second clean extractor pass after
             # a transient HTTP/rate-limit failure. This does not bypass private/login walls.
-            attempts = [ytdlp_options(job, kind), ytdlp_options(job, kind)]
+            attempts = [ytdlp_options(job, kind), ytdlp_options(job, kind), ytdlp_options(job, kind)]
         else:
             attempts = [ytdlp_options(job, kind)]
 
@@ -1012,7 +1018,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="24.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="25.0.0", lifespan=lifespan)
 
 @app.exception_handler(Exception)
 async def unhandled_exception(request: Request, exc: Exception):
@@ -1059,7 +1065,7 @@ def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "24.0.0", "worker": WORKER_HEARTBEAT}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "25.0.0", "worker": WORKER_HEARTBEAT}
     finally: db.close()
 
 class DownloadRequest(BaseModel):
@@ -1081,30 +1087,52 @@ def serialize(row):
     }
 
 def reserve_download_job(visitor_id, job_id, url, kind, cost):
-    """Atomically reserve credits and enqueue a download in one DB transaction."""
-    db=Session()
-    try:
-        account=ensure_credit_account(db,visitor_id)
-        if cost>0 and not bool(getattr(account,"unlimited",False)):
-            balance=credit_balance(account)
-            if balance < cost:
-                db.rollback()
-                return False,balance
-            free_used=min(account.free_credits,cost)
-            account.free_credits-=free_used
-            account.purchased_credits-=cost-free_used
-            account.updated_at=datetime.now(timezone.utc)
-            db.add(CreditTransaction(visitor_id=visitor_id,tx_type="download",credits=-cost,status="completed",note=f"Video download {job_id};free_used={free_used}"))
-        elif cost>0:
-            db.add(CreditTransaction(visitor_id=visitor_id,tx_type="download",credits=0,status="completed",note=f"Unlimited download {job_id}"))
-        db.add(Download(job_id=job_id,visitor_id=visitor_id,url=url,title="Preparing...",status="queued",kind=kind))
-        db.commit()
-        return True,credit_balance(account)
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
+    """Reserve credits and enqueue atomically, with a safe retry for busy/legacy DBs."""
+    last_exc = None
+    for attempt in range(3):
+        db = Session()
+        try:
+            account = ensure_credit_account(db, visitor_id)
+            if cost > 0 and not bool(getattr(account, "unlimited", False)):
+                balance = credit_balance(account)
+                if balance < cost:
+                    db.rollback()
+                    return False, balance
+                free_used = min(int(account.free_credits or 0), cost)
+                paid_used = cost - free_used
+                account.free_credits = int(account.free_credits or 0) - free_used
+                account.purchased_credits = int(account.purchased_credits or 0) - paid_used
+                account.updated_at = datetime.now(timezone.utc)
+                db.add(CreditTransaction(visitor_id=visitor_id, tx_type="download", credits=-cost, status="completed", note=f"Video download {job_id};free_used={free_used}"))
+            elif cost > 0:
+                db.add(CreditTransaction(visitor_id=visitor_id, tx_type="download", credits=0, status="completed", note=f"Unlimited download {job_id}"))
+            db.add(Download(job_id=job_id, visitor_id=visitor_id, url=url, title="Preparing...", status="queued", kind=kind))
+            db.commit()
+            return True, credit_balance(account)
+        except IntegrityError as exc:
+            last_exc = exc
+            db.rollback()
+            if attempt < 2:
+                time.sleep(0.08 * (attempt + 1))
+                continue
+            raise
+        except OperationalError as exc:
+            last_exc = exc
+            db.rollback()
+            if attempt < 2:
+                time.sleep(0.12 * (attempt + 1))
+                continue
+            raise
+        except Exception as exc:
+            last_exc = exc
+            db.rollback()
+            if attempt < 2:
+                time.sleep(0.08 * (attempt + 1))
+                continue
+            raise
+        finally:
+            db.close()
+    raise last_exc or RuntimeError("Unable to reserve download")
 
 @app.post("/api/download")
 def create_download(req: DownloadRequest, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
@@ -1131,9 +1159,10 @@ def create_download(req: DownloadRequest, request: Request, vexdou_visitor: str 
     except Exception as exc:
         diagnostic_id = uuid.uuid4().hex[:12]
         log.exception("atomic credit/job reservation failed id=%s visitor=%s", diagnostic_id, visitor)
-        raise HTTPException(500, f"Could not create the download safely. Diagnostic ID: {diagnostic_id}") from exc
+        raise HTTPException(503, "Download service is temporarily busy. Your credits were not charged. Please try again.") from exc
     if not ok:
-        raise HTTPException(402, detail={"code":"OUT_OF_CREDITS","message":"You are out of credits. Please buy more credits to continue.","credits":remaining or 0,"cost":cost})
+        queue_user_email(visitor, "QuickDL — you are out of credits", "Your free credits are finished", f"Your QuickDL balance is {remaining or 0} credits. A video download requires {cost} credits. You can add credits from the Credits section.", "CREDIT BALANCE", "#f59e0b")
+        raise HTTPException(402, detail={"code":"OUT_OF_CREDITS","message":"You are out of credits. Please add credits to continue.","credits":remaining or 0,"cost":cost})
     out = JSONResponse({"ok":True, "job_id":job, "status":"queued", "platform":platform(url), "kind":kind})
     if not vexdou_visitor or request.headers.get("x-quickdl-visitor"):
         _set_visitor_cookie(out, visitor)
@@ -1471,6 +1500,33 @@ def send_welcome_email(to_email,name,user_code,method="email"):
     html=f"""<!doctype html><html><body style='margin:0;background:#f4f6fb;font-family:Arial,sans-serif;color:#151925'><div style='max-width:620px;margin:36px auto;background:#fff;border:1px solid #e7e9ef;border-radius:24px;overflow:hidden'><div style='padding:30px;background:linear-gradient(135deg,#101321,#29224d);color:#fff'><div style='font-size:28px;font-weight:900'>Quick<span style='color:#8f82ff'>DL</span></div><div style='margin-top:8px;color:#cbd0e2;font-size:13px'>Your public-media workspace is ready.</div></div><div style='padding:32px'><div style='font-size:13px;color:#6b7280'>WELCOME TO QUICKDL</div><h1 style='margin:8px 0 12px;font-size:30px'>Welcome, {safe_name}! 👋</h1><p style='color:#687083;line-height:1.7'>Your account has been verified successfully. You can now use QuickDL and keep your downloads and credit balance connected to your account.</p><div style='margin:22px 0;padding:18px 20px;border-radius:16px;background:#f3f2ff;border:1px solid #e4e0ff'><div style='font-size:11px;color:#73798a;font-weight:800'>YOUR QUICKDL USER ID</div><div style='font-size:30px;letter-spacing:5px;font-weight:900;color:#5d54dc;margin-top:6px'>{safe_code}</div></div><p style='font-size:12px;color:#8a90a0;line-height:1.6'>Keep this User ID if you ever need support. QuickDL will never ask you for your Google password.</p></div></div></body></html>"""
     _send_html_email(to_email,"Welcome to QuickDL — your account is ready",html,f"Welcome to QuickDL, {name or 'there'}! Your account is ready. Your User ID is {user_code}.")
 
+
+def _user_email_and_name(visitor_id):
+    db = Session()
+    try:
+        a = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id))
+        if not a:
+            return None, "there", None
+        return (a.email or a.google_email or "").strip(), (a.google_name or a.auth_name or (a.email or a.google_email or "").split("@")[0] or "there"), a.user_code
+    finally:
+        db.close()
+
+def _event_email_html(name, user_code, title, intro, badge="QUICKDL NOTIFICATION", accent="#7c6cff"):
+    return f"""<!doctype html><html><body style='margin:0;background:#f4f6fb;font-family:Arial,sans-serif;color:#151925'><div style='max-width:640px;margin:30px auto;background:#fff;border:1px solid #e7e9ef;border-radius:26px;overflow:hidden'><div style='padding:30px;background:linear-gradient(135deg,#0b0e18,#29224d);color:#fff'><div style='font-size:29px;font-weight:900'>Quick<span style='color:{accent}'>DL</span></div><div style='margin-top:7px;color:#cbd0e2;font-size:13px'>A secure account notification</div></div><div style='padding:34px'><div style='font-size:11px;letter-spacing:1.5px;color:#7b8190;font-weight:900'>{_safe_html(badge)}</div><h1 style='font-size:28px;margin:8px 0 12px'>{_safe_html(title)}</h1><p style='color:#687083;line-height:1.75'>{_safe_html(intro)}</p><div style='margin:24px 0;padding:18px 20px;background:#f5f3ff;border:1px solid #e4e0ff;border-radius:17px'><div style='font-size:11px;color:#74798a;font-weight:800'>QUICKDL USER ID</div><div style='font-size:25px;font-weight:900;letter-spacing:4px;color:#5d54dc;margin-top:5px'>{_safe_html(user_code or "—")}</div></div><p style='font-size:12px;color:#8a90a0;line-height:1.6'>If you did not perform this action, secure your account and contact support.</p></div></div></body></html>"""
+
+def queue_user_email(visitor_id, subject, title, intro, badge="QUICKDL NOTIFICATION", accent="#7c6cff"):
+    def runner():
+        try:
+            email, name, code = _user_email_and_name(visitor_id)
+            if not email or not RESEND_API_KEY and not SMTP_PASSWORD:
+                return
+            html = _event_email_html(name, code, title, intro, badge, accent)
+            _send_html_email(email, subject, html, f"{title}\n\n{intro}\n\nQuickDL User ID: {code or '—'}")
+        except Exception:
+            log.exception("event email failed visitor=%s subject=%s", visitor_id, subject)
+    threading.Thread(target=runner, daemon=True).start()
+
+
 def login_enabled(): return setting_bool("login_enabled")
 
 @app.post("/api/auth/signup/request")
@@ -1524,7 +1580,7 @@ def email_login(data: EmailLoginRequest, request: Request, vexdou_visitor: str |
     try:
         account=db.scalar(select(CreditAccount).where(CreditAccount.email==email).with_for_update())
         if not account or not account.password_hash or not account.email_verified or not password_ok(data.password,account.password_hash): raise HTTPException(401,"Email or password is incorrect.")
-        db.commit(); out=JSONResponse({"ok":True,**account_payload(account.visitor_id)}); _set_visitor_cookie(out,account.visitor_id); return out
+        db.commit(); queue_user_email(account.visitor_id, "QuickDL sign-in successful", "You signed in successfully", "Your QuickDL email account was just used to sign in. Your credits and account data remain connected.", "ACCOUNT SIGN-IN"); out=JSONResponse({"ok":True,**account_payload(account.visitor_id)}); _set_visitor_cookie(out,account.visitor_id); return out
     finally: db.close()
 
 @app.post("/api/auth/forgot")
@@ -1593,6 +1649,7 @@ def google_login(data: GoogleLoginRequest, request: Request, vexdou_visitor: str
             first_google_login = not bool(target.google_sub)
             target.google_sub=sub; target.google_email=email; target.google_name=name; target.google_picture=picture; target.google_linked_at=datetime.now(timezone.utc)
             db.commit()
+            queue_user_email(target.visitor_id, "QuickDL — Google sign-in", "Google sign-in confirmed", "Your Google account was used to sign in to QuickDL successfully.", "GOOGLE SIGN-IN")
             if first_google_login and not target.google_welcome_sent_at and (RESEND_API_KEY or SMTP_PASSWORD):
                 try:
                     send_welcome_email(email,name,target.user_code, "google")
@@ -1614,6 +1671,7 @@ def google_login(data: GoogleLoginRequest, request: Request, vexdou_visitor: str
         first_google_login = not bool(current.google_sub)
         current.google_sub=sub; current.google_email=email; current.google_name=name; current.google_picture=picture; current.google_linked_at=datetime.now(timezone.utc); current.updated_at=datetime.now(timezone.utc)
         db.commit()
+        queue_user_email(current.visitor_id, "QuickDL — Google sign-in", "Google sign-in confirmed", "Your Google account was used to sign in to QuickDL successfully.", "GOOGLE SIGN-IN")
         if first_google_login and not current.google_welcome_sent_at and (RESEND_API_KEY or SMTP_PASSWORD):
             try:
                 send_welcome_email(email,name,current.user_code, "google")
@@ -1693,6 +1751,7 @@ def paypal_capture_order(order_id: str, request: Request, vexdou_visitor: str | 
             po.status="captured"; po.capture_id=capture_id; po.captured_at=datetime.now(timezone.utc)
             db.add(CreditTransaction(visitor_id=vexdou_visitor,tx_type="purchase",credits=po.credits,amount=po.amount,currency=po.currency,package_id=po.package_id,paypal_order_id=order_id,paypal_capture_id=capture_id,status="completed",note=f"PayPal purchase: {package['name']}"))
             db.commit()
+            queue_user_email(vexdou_visitor, "QuickDL credit purchase confirmed", "Your credits were added", f"Your PayPal purchase of {po.credits:,} credits has been confirmed and added to your QuickDL account.", "PAYMENT CONFIRMED", "#20b486")
         balance=account_payload(vexdou_visitor)
         return {"ok":True,"credits_added":po.credits,"balance":balance["credits"],"order_id":order_id,"capture_id":capture_id}
     finally: db.close()
@@ -1892,7 +1951,7 @@ def admin_system(request: Request):
         for st in ("queued","downloading","completed","failed"):
             counts[st]=db.scalar(select(func.count()).select_from(Download).where(Download.status==st)) or 0
         return {
-            "version":"24.0.0",
+            "version":"25.0.0",
             "python":os.sys.version.split()[0],
             "yt_dlp":getattr(yt_dlp,"version",{}).get("version") if isinstance(getattr(yt_dlp,"version",None),dict) else str(getattr(yt_dlp,"version","unknown")),
             "ffmpeg":shutil.which("ffmpeg") or "missing",
@@ -1981,7 +2040,7 @@ def admin_overview(request: Request):
             status[r.status] = status.get(r.status, 0) + 1
             p = platform(r.url); plats[p] = plats.get(p, 0) + 1
         users = len({r.visitor_id for r in rows})
-        return {"version":"24.0.0-admin", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
+        return {"version":"25.0.0-admin", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
     finally: db.close()
 
 @app.get("/api/admin/users")
@@ -2104,6 +2163,8 @@ def admin_grant_credits(data: AdminCreditAction, request: Request):
             a.unlimited=bool(data.unlimited)
             db.add(CreditTransaction(visitor_id=target,tx_type="admin_unlimited",credits=0,status="completed",note=("Unlimited enabled" if a.unlimited else "Unlimited disabled")+" · "+data.note[:900]))
         a.updated_at=datetime.now(timezone.utc); db.commit(); audit("admin_credit_adjustment",f"{target}: +{data.credits}, unlimited={data.unlimited}")
+        if data.credits or data.unlimited is not None:
+            queue_user_email(target, "QuickDL account credit update", "Your account was updated", f"An administrator updated your QuickDL account. Credits added: {data.credits:,}." + (" Unlimited access was enabled." if data.unlimited else ""), "ADMIN ACCOUNT UPDATE")
         return {"ok":True,**account_payload(target)}
     finally: db.close()
 
@@ -2115,6 +2176,7 @@ def admin_revoke_credits(data: AdminCreditAction, request: Request):
     try:
         target=resolve_admin_visitor(db,data); a=ensure_credit_account(db,target); amount=min(data.credits,max(0,int(a.purchased_credits or 0))); a.purchased_credits-=amount; a.updated_at=datetime.now(timezone.utc)
         db.add(CreditTransaction(visitor_id=target,tx_type="admin_revoke",credits=-amount,status="completed",note=data.note[:1000])); db.commit(); audit("admin_credit_revoke",f"{target}: -{amount}")
+        if amount: queue_user_email(target, "QuickDL credit update", "Credits were removed", f"An administrator removed {amount:,} purchased credits from your account.", "ACCOUNT UPDATE", "#f05b75")
         return {"ok":True,**account_payload(target)}
     finally: db.close()
 
@@ -2124,6 +2186,7 @@ def admin_reset_credits(data: AdminCreditAction, request: Request):
     try:
         target=resolve_admin_visitor(db,data); a=ensure_credit_account(db,target); old=credit_balance(a) or 0; a.free_credits=MONTHLY_FREE_CREDITS; a.purchased_credits=0; a.unlimited=False; a.updated_at=datetime.now(timezone.utc)
         db.add(CreditTransaction(visitor_id=target,tx_type="admin_reset",credits=-int(old),status="completed",note=data.note[:1000])); db.commit(); audit("admin_credit_reset",target)
+        queue_user_email(target, "QuickDL account credits reset", "Your credits were reset", "An administrator reset your QuickDL credit balance. Your monthly allowance remains available according to the current billing month.", "ACCOUNT UPDATE", "#f05b75")
         return {"ok":True,**account_payload(target)}
     finally: db.close()
 
