@@ -1,63 +1,59 @@
-# QuickDL — full fixed build
+# QuickDL v15
 
-This build keeps the QuickDL backend structure and adds a production-oriented frontend/PWA layer.
+QuickDL v15 is a public-media downloader with a server-side credit wallet, LIVE PayPal checkout, daily gifts, unlimited-user admin controls, download recovery, revenue reporting, and a full admin control center.
 
-## Fixed / improved
-- YouTube normal videos and Shorts use multiple public yt-dlp client attempts.
-- Instagram posts/reels use yt-dlp plus a public-page/embed fallback where the public page exposes media.
-- Facebook, Pinterest, TikTok, X/Twitter, Snapchat and generic web URLs go through the public yt-dlp extractor.
-- Stale per-platform database flags no longer block downloads by default. Set `STRICT_PLATFORM_TOGGLES=true` if you want admin platform switches to actively block them.
-- YouTube JavaScript runtime is enabled only when Node.js exists, avoiding a missing-node crash on Python-only hosts.
-- `/api/preview/{job}` provides an inline HTML5 preview response; `/api/file/{job}` remains the save/download endpoint.
-- History is loaded from the server database and survives page reloads until the user clears it or the stored media file expires.
-- QuickDL Credits are enabled: 50 free credits per UTC month; each video/audio download costs 2 credits.
-- PayPal Checkout v6 is integrated for one-time real-money credit purchases. The server creates/captures Orders; the PayPal client secret never goes into frontend code.
-- Built-in packages: 100/$1.99, 500/$6.99, 1,200/$14.99, 3,000/$29.99, 7,500/$59.99. Prices are defined server-side so users cannot alter the amount.
-- PayPal webhook endpoint is included and verifies PayPal webhook signatures through PayPal before processing completed captures.
-- Credit transactions are recorded and failed downloads automatically refund the credits used.
-- PWA manifest + service worker + QuickDL icons are included.
-- Install banner uses the browser's `beforeinstallprompt` event, disappears after 15 seconds, and can be closed immediately with X.
+## Core systems
+- 50 monthly free credits by default.
+- 2 credits per video/audio download by default.
+- Purchased credits do not expire.
+- Daily 🎁 gift system; default gift is 10 credits every 24 hours.
+- Admin can grant any number of credits, revoke credits, reset a user, or enable/disable Unlimited for a visitor.
+- Unlimited users are not charged credits for downloads.
+- All manual credit changes are written to the audit/transaction history.
 
-## Environment
-Required:
-- `DATABASE_URL`
+## LIVE PayPal
+Required Render variables:
+- `PAYPAL_MODE=live`
+- `PAYPAL_CLIENT_ID=<Live REST app client id>`
+- `PAYPAL_CLIENT_SECRET=<Live REST app secret>`
+- `PAYPAL_CURRENCY=USD`
+- `PAYPAL_DOMAIN=https://quickdl.site`
+- `PAYPAL_WEBHOOK_ID=<Live webhook id>`
+
+The browser uses the standard PayPal Live JS SDK button. The client secret remains server-side. Server creates the Orders API order and captures it. PayPal `PayPal-Request-Id` is used for idempotent create calls. The webhook listens for `PAYMENT.CAPTURE.COMPLETED` and verifies the signature before crediting the account.
+
+## PayPal verification
+Open:
+`https://quickdl.site/paypal-api/health`
+
+Never publish the client secret. A successful health response should show `ok: true`, `configured: true`, `mode: live`, and the Live API base URL.
+
+## Admin
+Open `/admin18`.
+
+Features:
+- Overview and worker health
+- User search by visitor ID
+- Give credits / revoke / reset
+- Unlimited on/off
+- Gift system settings
+- Monthly free credit setting
+- PayPal revenue and captured orders
+- Download retry/delete controls
+- Download errors
+- Maintenance and announcement controls
+- Platform switches
+- File retention and size settings
+- Audit log
+
+Set:
 - `ADMIN_PASSWORD`
 - `ADMIN_SESSION_SECRET`
 
-Useful:
-- `MAX_FILE_MB=300`
-- `KEEP_FILE_HOURS=6`
-- `STRICT_PLATFORM_TOGGLES=false`
-- `WORK_DIR=/tmp/quickdl`
-- `MONTHLY_FREE_CREDITS=50`
-- `VIDEO_CREDIT_COST=2`
-- `PAYPAL_MODE=sandbox` for testing, then `PAYPAL_MODE=live` for real payments
-- `PAYPAL_CLIENT_ID=...`
-- `PAYPAL_CLIENT_SECRET=...` (server only; never put this in HTML/JS)
-- `PAYPAL_CURRENCY=USD`
-- `PAYPAL_DOMAIN=https://your-domain.example` (recommended for v6 browser-safe token binding)
-- `PAYPAL_WEBHOOK_ID=...` (the webhook ID from the PayPal Developer Dashboard)
+## Download reliability
+The worker recovers jobs left in `downloading` after a restart. Failed jobs refund their credit charge. Admin can retry failed/stuck jobs. `/api/health` reports a worker heartbeat and last processed job.
 
-## Important platform limitation
-The downloader is for public media URLs. It does not bypass private posts, login walls, DRM, CAPTCHA, or platform access controls. Some platforms can temporarily rate-limit automated traffic. YouTube also changes its delivery requirements over time; yt-dlp documents current client/PO-token limitations.
+Supported public media sources are passed through yt-dlp. Sites can change their delivery systems or rate-limit automated traffic, so no extractor can guarantee every public URL forever. Private/login/DRM/CAPTCHA access controls are not bypassed.
 
-## PWA install
-Serve the site over HTTPS in production. Chromium-based browsers expose the in-page install prompt when the PWA meets their installability conditions. iOS Safari does not expose the `beforeinstallprompt` event, so users there should use Safari's Add to Home Screen menu.
-
-## Docker
-A Dockerfile is included with FFmpeg and Node.js so audio conversion and YouTube JavaScript extraction have their required runtime available.
-
-## PayPal setup
-
-1. In PayPal Developer Dashboard, create/configure the QuickDL app and copy its Client ID and Secret into server environment variables. PayPal's current v6 documentation supports the Web SDK and server-side Orders API; keep the secret server-side.
-2. Start in Sandbox and test a complete purchase: select a package -> PayPal approval -> server capture -> credits added.
-3. Create a PayPal webhook pointing to `https://YOUR-DOMAIN/paypal-api/webhook` and subscribe to `PAYMENT.CAPTURE.COMPLETED`. Put the resulting webhook ID in `PAYPAL_WEBHOOK_ID`.
-4. After end-to-end sandbox testing, switch the server to `PAYPAL_MODE=live` and use the live credentials.
-
-The frontend never sends the price as the source of truth. The backend maps the package ID to the fixed server-side package price and creates the PayPal order from that value.
-
-
-## PayPal LIVE configuration
-Use the same PayPal REST app's **Live** credentials for `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET`. Set `PAYPAL_MODE=live`, `PAYPAL_CURRENCY=USD`, and `PAYPAL_DOMAIN=https://quickdl.site`. The browser uses the PayPal v6 SDK with the public client ID; the client secret is used only on the server for REST OAuth and is never returned to the browser. PayPal's current v6 documentation recommends client-ID authentication for standard one-time checkout and reserves browser-safe client tokens primarily for Fastlane.
-
-Deployment check: `GET /paypal-api/health` returns a non-secret connectivity/configuration result and a PayPal debug ID when PayPal rejects the server credentials.
+## Deployment
+Render should run the Dockerfile. Use a persistent PostgreSQL database for accounts, credits, payments, history, and audit records. The local media workspace is ephemeral; files are kept only for the configured retention period.

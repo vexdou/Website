@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse, urljoin, parse_qs
 from decimal import Decimal, InvalidOperation
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import UniqueConstraint, text, Boolean
 
 import yt_dlp
 import requests
@@ -63,6 +63,9 @@ class CreditAccount(Base):
     month_key: Mapped[str] = mapped_column(String(7), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    unlimited: Mapped[bool] = mapped_column(Boolean, default=False)
+    gift_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    gift_streak: Mapped[int] = mapped_column(Integer, default=0)
 
 class CreditTransaction(Base):
     __tablename__ = "credit_transactions"
@@ -95,6 +98,24 @@ class PayPalOrder(Base):
 
 Base.metadata.create_all(engine)
 
+def migrate_credit_columns():
+    try:
+        with engine.begin() as conn:
+            if conn.dialect.name == "postgresql":
+                cols = {r[0] for r in conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='credit_accounts'"))}
+                if "unlimited" not in cols: conn.execute(text("ALTER TABLE credit_accounts ADD COLUMN unlimited BOOLEAN NOT NULL DEFAULT FALSE"))
+                if "gift_claimed_at" not in cols: conn.execute(text("ALTER TABLE credit_accounts ADD COLUMN gift_claimed_at TIMESTAMPTZ NULL"))
+                if "gift_streak" not in cols: conn.execute(text("ALTER TABLE credit_accounts ADD COLUMN gift_streak INTEGER NOT NULL DEFAULT 0"))
+            elif conn.dialect.name == "sqlite":
+                cols = {r[1] for r in conn.execute(text("PRAGMA table_info(credit_accounts)"))}
+                if "unlimited" not in cols: conn.execute(text("ALTER TABLE credit_accounts ADD COLUMN unlimited BOOLEAN NOT NULL DEFAULT 0"))
+                if "gift_claimed_at" not in cols: conn.execute(text("ALTER TABLE credit_accounts ADD COLUMN gift_claimed_at DATETIME NULL"))
+                if "gift_streak" not in cols: conn.execute(text("ALTER TABLE credit_accounts ADD COLUMN gift_streak INTEGER NOT NULL DEFAULT 0"))
+    except Exception:
+        log.exception("credit account migration failed")
+
+migrate_credit_columns()
+
 UA = os.getenv(
     "DOWNLOADER_USER_AGENT",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36"
@@ -104,6 +125,8 @@ KEEP_FILE_HOURS = float(os.getenv("KEEP_FILE_HOURS", "6"))
 STRICT_PLATFORM_TOGGLES = os.getenv("STRICT_PLATFORM_TOGGLES", "false").lower() in {"1", "true", "yes", "on"}
 MONTHLY_FREE_CREDITS = int(os.getenv("MONTHLY_FREE_CREDITS", "50"))
 VIDEO_CREDIT_COST = int(os.getenv("VIDEO_CREDIT_COST", "2"))
+GIFT_CREDITS = int(os.getenv("GIFT_CREDITS", "10"))
+GIFT_COOLDOWN_HOURS = int(os.getenv("GIFT_COOLDOWN_HOURS", "24"))
 PAYPAL_MODE = os.getenv("PAYPAL_MODE", "live").strip().lower()
 PAYPAL_CLIENT_ID = os.getenv("PAYPAL_CLIENT_ID", "").strip()
 PAYPAL_CLIENT_SECRET = os.getenv("PAYPAL_CLIENT_SECRET", "").strip()
@@ -111,6 +134,7 @@ PAYPAL_CURRENCY = os.getenv("PAYPAL_CURRENCY", "USD").strip().upper()
 PAYPAL_DOMAIN = os.getenv("PAYPAL_DOMAIN", "").strip()
 PAYPAL_WEBHOOK_ID = os.getenv("PAYPAL_WEBHOOK_ID", "").strip()
 PAYPAL_TOKEN_CACHE = {"token": None, "expires_at": 0}
+WORKER_HEARTBEAT = {"started_at": None, "last_loop": None, "last_job": None}
 CREDIT_PACKAGES = {
     "starter": {"name": "Starter", "credits": 100, "price": "1.99", "badge": ""},
     "popular": {"name": "Popular", "credits": 500, "price": "6.99", "badge": "Most popular"},
@@ -127,25 +151,32 @@ def current_month_key():
 
 def ensure_credit_account(db, visitor_id):
     month = current_month_key()
+    monthly_free = int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS) if "setting_get" in globals() else MONTHLY_FREE_CREDITS
     account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
     if not account:
-        account = CreditAccount(visitor_id=visitor_id, free_credits=MONTHLY_FREE_CREDITS, purchased_credits=0, month_key=month)
+        account = CreditAccount(visitor_id=visitor_id, free_credits=monthly_free, purchased_credits=0, month_key=month)
         db.add(account)
         db.flush()
     elif account.month_key != month:
-        account.free_credits = MONTHLY_FREE_CREDITS
+        account.free_credits = monthly_free
         account.month_key = month
         account.updated_at = datetime.now(timezone.utc)
         db.flush()
     return account
 
 def credit_balance(account):
+    if bool(getattr(account, "unlimited", False)):
+        return None
     return max(0, int(account.free_credits or 0)) + max(0, int(account.purchased_credits or 0))
 
 def debit_download_credits(visitor_id, job_id, cost):
     db = Session()
     try:
         account = ensure_credit_account(db, visitor_id)
+        if bool(getattr(account, "unlimited", False)):
+            db.add(CreditTransaction(visitor_id=visitor_id, tx_type="download", credits=0, status="completed", note=f"Unlimited download {job_id}"))
+            db.commit()
+            return True, None
         if credit_balance(account) < cost:
             db.rollback()
             return False, credit_balance(account)
@@ -163,6 +194,10 @@ def refund_download_credits(visitor_id, job_id, cost):
     db = Session()
     try:
         account = ensure_credit_account(db, visitor_id)
+        if bool(getattr(account, "unlimited", False)):
+            db.add(CreditTransaction(visitor_id=visitor_id, tx_type="refund", credits=0, status="completed", note=f"Failed unlimited download {job_id}"))
+            db.commit()
+            return
         tx = db.scalar(select(CreditTransaction).where(CreditTransaction.visitor_id==visitor_id, CreditTransaction.tx_type=="download", CreditTransaction.note.like(f"%{job_id}%")).order_by(CreditTransaction.id.desc()))
         free_used = 0
         if tx and tx.note and "free_used=" in tx.note:
@@ -181,7 +216,7 @@ def account_payload(visitor_id):
     try:
         account = ensure_credit_account(db, visitor_id)
         db.commit()
-        return {"free_credits": account.free_credits, "purchased_credits": account.purchased_credits, "credits": credit_balance(account), "monthly_free": MONTHLY_FREE_CREDITS, "video_cost": VIDEO_CREDIT_COST, "month": account.month_key}
+        return {"free_credits": account.free_credits, "purchased_credits": account.purchased_credits, "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": MONTHLY_FREE_CREDITS, "video_cost": VIDEO_CREDIT_COST, "month": account.month_key, "gift_credits": int(setting_get("gift_credits") or GIFT_CREDITS) if "setting_get" in globals() else GIFT_CREDITS}
     finally:
         db.close()
 
@@ -704,14 +739,18 @@ def cleanup_old():
         except OSError: pass
 
 def worker_loop():
+    WORKER_HEARTBEAT["started_at"] = datetime.now(timezone.utc).isoformat()
     recover_stuck()
     last = 0
     while True:
         try:
             if time.time() - last > 600:
                 cleanup_old(); last = time.time()
+            WORKER_HEARTBEAT["last_loop"] = datetime.now(timezone.utc).isoformat()
             item = claim_one()
-            if item: process(*item)
+            if item:
+                WORKER_HEARTBEAT["last_job"] = item[0]
+                process(*item)
             else: time.sleep(float(os.getenv("WORKER_POLL_SECONDS", "0.7")))
         except Exception:
             log.exception("worker error"); time.sleep(2)
@@ -721,7 +760,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="14.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="15.0.0", lifespan=lifespan)
 
 @app.get("/")
 def home():
@@ -740,14 +779,14 @@ def sw(): return FileResponse(BASE / "sw.js", media_type="application/javascript
 
 @app.get("/api/public-config")
 def public_config():
-    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance"),"credits_enabled":True,"monthly_free":MONTHLY_FREE_CREDITS,"video_cost":VIDEO_CREDIT_COST,"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET),"paypal_mode":PAYPAL_MODE,"paypal_client_id":PAYPAL_CLIENT_ID,"currency":PAYPAL_CURRENCY}
+    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance"),"credits_enabled":True,"monthly_free":MONTHLY_FREE_CREDITS,"video_cost":VIDEO_CREDIT_COST,"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET),"paypal_mode":PAYPAL_MODE,"paypal_client_id":PAYPAL_CLIENT_ID,"currency":PAYPAL_CURRENCY,"gift_enabled":setting_bool("gift_enabled"),"gift_credits":int(setting_get("gift_credits") or GIFT_CREDITS)}
 
 @app.get("/api/health")
 def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "14.0.0"}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "15.0.0", "worker": WORKER_HEARTBEAT}
     finally: db.close()
 
 class DownloadRequest(BaseModel):
@@ -788,7 +827,7 @@ def create_download(req: DownloadRequest, vexdou_visitor: str | None = Cookie(de
     cost = VIDEO_CREDIT_COST if kind == "video" else VIDEO_CREDIT_COST
     ok, remaining = debit_download_credits(visitor, job, cost)
     if not ok:
-        raise HTTPException(402, detail={"code":"OUT_OF_CREDITS","message":"You are out of credits. Please buy more credits to continue.","credits":remaining,"cost":cost})
+        raise HTTPException(402, detail={"code":"OUT_OF_CREDITS","message":"You are out of credits. Please buy more credits to continue.","credits":remaining or 0,"cost":cost})
     db = Session()
     try:
         db.add(Download(job_id=job, visitor_id=visitor, url=url, title="Preparing...", status="queued", kind=kind))
@@ -905,6 +944,33 @@ def api_account(vexdou_visitor: str | None = Cookie(default=None)):
     if not vexdou_visitor:
         out.set_cookie("vexdou_visitor", visitor, max_age=31536000, httponly=True, samesite="lax", secure=False)
     return out
+
+@app.post("/api/gift/claim")
+def claim_gift(vexdou_visitor: str | None = Cookie(default=None)):
+    visitor = vexdou_visitor or uuid.uuid4().hex
+    if not setting_bool("gift_enabled"):
+        raise HTTPException(403, "Daily gifts are currently disabled.")
+    db = Session()
+    try:
+        account = ensure_credit_account(db, visitor)
+        now = datetime.now(timezone.utc)
+        cooldown = int(setting_get("gift_cooldown_hours") or GIFT_COOLDOWN_HOURS) * 3600
+        if account.gift_claimed_at and (now - account.gift_claimed_at).total_seconds() < cooldown:
+            remaining = int(cooldown - (now-account.gift_claimed_at).total_seconds())
+            raise HTTPException(429, f"Your next gift is available in about {max(1, remaining//3600)}h.")
+        gift = max(0, int(setting_get("gift_credits") or GIFT_CREDITS))
+        if not bool(getattr(account, "unlimited", False)):
+            account.purchased_credits += gift
+        account.gift_claimed_at = now
+        account.gift_streak = int(account.gift_streak or 0) + 1
+        account.updated_at = now
+        db.add(CreditTransaction(visitor_id=visitor, tx_type="gift", credits=gift, status="completed", note="Daily gift"))
+        db.commit()
+        payload = account_payload(visitor)
+        out = JSONResponse({"ok":True,"gift":gift,"streak":account.gift_streak,**payload})
+        if not vexdou_visitor: out.set_cookie("vexdou_visitor", visitor, max_age=31536000, httponly=True, samesite="lax", secure=False)
+        return out
+    finally: db.close()
 
 @app.get("/api/credits/packages")
 def credit_packages():
@@ -1066,6 +1132,11 @@ DEFAULT_SETTINGS = {
     "x_enabled": "true",
     "snapchat_enabled": "true",
     "web_enabled": "true",
+    "gift_enabled": "true",
+    "gift_credits": str(GIFT_CREDITS),
+    "gift_cooldown_hours": str(GIFT_COOLDOWN_HOURS),
+    "max_concurrent_jobs": os.getenv("MAX_CONCURRENT_JOBS", "2"),
+    "monthly_free_credits": str(MONTHLY_FREE_CREDITS),
 }
 
 def setting_get(key):
@@ -1223,6 +1294,77 @@ def admin_audit(request: Request, limit: int = 100):
         rows=db.scalars(select(AdminAudit).order_by(AdminAudit.created_at.desc()).limit(max(1,min(limit,300)))).all(); return {"items":[{"action":r.action,"detail":r.detail,"created_at":r.created_at.isoformat() if r.created_at else None} for r in rows]}
     finally: db.close()
 
+class AdminCreditAction(BaseModel):
+    visitor_id: str
+    credits: int = 0
+    unlimited: bool | None = None
+    note: str = "Admin adjustment"
+
+@app.get("/api/admin/credit-users")
+def admin_credit_users(request: Request, q: str = "", limit: int = 100):
+    require_admin(request); limit=max(1,min(limit,500)); db=Session()
+    try:
+        accounts=db.scalars(select(CreditAccount).order_by(CreditAccount.updated_at.desc()).limit(1000)).all()
+        downloads=db.scalars(select(Download).order_by(Download.created_at.desc()).limit(5000)).all()
+        counts={}
+        for r in downloads:
+            x=counts.setdefault(r.visitor_id,{"downloads":0,"completed":0,"failed":0,"last_seen":r.created_at})
+            x["downloads"]+=1; x["completed"]+=int(r.status=="completed"); x["failed"]+=int(r.status=="failed")
+            if r.created_at and (not x.get("last_seen") or r.created_at>x["last_seen"]): x["last_seen"]=r.created_at
+        q=(q or "").strip().lower(); items=[]
+        for a in accounts:
+            if q and q not in a.visitor_id.lower(): continue
+            c=counts.get(a.visitor_id,{})
+            items.append({"visitor_id":a.visitor_id,"credits":credit_balance(a),"free_credits":a.free_credits,"purchased_credits":a.purchased_credits,"unlimited":bool(getattr(a,"unlimited",False)),"gift_streak":a.gift_streak,"downloads":c.get("downloads",0),"completed":c.get("completed",0),"failed":c.get("failed",0),"updated_at":a.updated_at.isoformat() if a.updated_at else None,"last_seen":c.get("last_seen").isoformat() if c.get("last_seen") else None})
+        return {"items":items[:limit]}
+    finally: db.close()
+
+@app.post("/api/admin/credits/grant")
+def admin_grant_credits(data: AdminCreditAction, request: Request):
+    require_admin(request)
+    if len(data.visitor_id)>128 or data.credits<0: raise HTTPException(400,"Invalid credit adjustment")
+    db=Session()
+    try:
+        a=ensure_credit_account(db,data.visitor_id)
+        if data.credits:
+            a.purchased_credits += data.credits
+            db.add(CreditTransaction(visitor_id=data.visitor_id,tx_type="admin_grant",credits=data.credits,status="completed",note=data.note[:1000]))
+        if data.unlimited is not None:
+            a.unlimited=bool(data.unlimited)
+            db.add(CreditTransaction(visitor_id=data.visitor_id,tx_type="admin_unlimited",credits=0,status="completed",note=("Unlimited enabled" if a.unlimited else "Unlimited disabled")+" · "+data.note[:900]))
+        a.updated_at=datetime.now(timezone.utc); db.commit(); audit("admin_credit_adjustment",f"{data.visitor_id}: +{data.credits}, unlimited={data.unlimited}")
+        return {"ok":True,**account_payload(data.visitor_id)}
+    finally: db.close()
+
+@app.post("/api/admin/credits/revoke")
+def admin_revoke_credits(data: AdminCreditAction, request: Request):
+    require_admin(request)
+    if data.credits<0: raise HTTPException(400,"Invalid amount")
+    db=Session()
+    try:
+        a=ensure_credit_account(db,data.visitor_id); amount=min(data.credits,max(0,int(a.purchased_credits or 0))); a.purchased_credits-=amount; a.updated_at=datetime.now(timezone.utc)
+        db.add(CreditTransaction(visitor_id=data.visitor_id,tx_type="admin_revoke",credits=-amount,status="completed",note=data.note[:1000])); db.commit(); audit("admin_credit_revoke",f"{data.visitor_id}: -{amount}")
+        return {"ok":True,**account_payload(data.visitor_id)}
+    finally: db.close()
+
+@app.post("/api/admin/credits/reset")
+def admin_reset_credits(data: AdminCreditAction, request: Request):
+    require_admin(request); db=Session()
+    try:
+        a=ensure_credit_account(db,data.visitor_id); old=credit_balance(a) or 0; a.free_credits=MONTHLY_FREE_CREDITS; a.purchased_credits=0; a.unlimited=False; a.updated_at=datetime.now(timezone.utc)
+        db.add(CreditTransaction(visitor_id=data.visitor_id,tx_type="admin_reset",credits=-int(old),status="completed",note=data.note[:1000])); db.commit(); audit("admin_credit_reset",data.visitor_id)
+        return {"ok":True,**account_payload(data.visitor_id)}
+    finally: db.close()
+
+@app.get("/api/admin/revenue")
+def admin_revenue(request: Request):
+    require_admin(request); db=Session()
+    try:
+        rows=db.scalars(select(CreditTransaction).where(CreditTransaction.tx_type=="purchase",CreditTransaction.status=="completed").order_by(CreditTransaction.created_at.desc()).limit(5000)).all()
+        total=sum(float(r.amount or 0) for r in rows); credits=sum(int(r.credits or 0) for r in rows)
+        return {"total_revenue":round(total,2),"purchased_credits":credits,"transactions":len(rows),"items":[{"visitor_id":r.visitor_id,"amount":r.amount,"currency":r.currency,"credits":r.credits,"package_id":r.package_id,"order_id":r.paypal_order_id,"created_at":r.created_at.isoformat() if r.created_at else None} for r in rows[:100]]}
+    finally: db.close()
+
 @app.post("/api/admin/settings")
 def admin_settings(data: AdminSettingUpdate, request: Request):
     require_admin(request); allowed_keys=set(DEFAULT_SETTINGS); db=Session()
@@ -1236,6 +1378,25 @@ def admin_settings(data: AdminSettingUpdate, request: Request):
             else: db.add(AdminSetting(key=key,value=val))
             changed.append(key)
         db.commit(); audit("settings_updated", ", ".join(changed)); return {"ok":True,"settings":settings_all()}
+    finally: db.close()
+
+@app.post("/api/admin/download/retry")
+def admin_retry_download(data: AdminAction, request: Request):
+    require_admin(request); db=Session()
+    try:
+        row=db.scalar(select(Download).where(Download.job_id==data.value))
+        if not row: raise HTTPException(404,"Download not found")
+        if row.status=="downloading": raise HTTPException(409,"Download is already running")
+        row.status="queued"; row.error=None; row.filename=None; row.content_type=None; db.commit(); audit("admin_retry_download",data.value); return {"ok":True}
+    finally: db.close()
+
+@app.post("/api/admin/download/delete")
+def admin_delete_download(data: AdminAction, request: Request):
+    require_admin(request); db=Session()
+    try:
+        row=db.scalar(select(Download).where(Download.job_id==data.value))
+        if not row: raise HTTPException(404,"Download not found")
+        cleanup_job(row.job_id); db.delete(row); db.commit(); audit("admin_delete_download",data.value); return {"ok":True}
     finally: db.close()
 
 @app.post("/api/admin/action")
