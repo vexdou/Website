@@ -13,7 +13,7 @@ try:
 except Exception:
     curl_requests = None
 from html import unescape
-from fastapi import FastAPI, HTTPException, Cookie, Request
+from fastapi import FastAPI, HTTPException, Cookie, Request, Header
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy import create_engine, String, Text, Integer, DateTime, select, update, delete, func
@@ -66,6 +66,11 @@ class CreditAccount(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     unlimited: Mapped[bool] = mapped_column(Boolean, default=False)
+    google_sub: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    google_email: Mapped[str | None] = mapped_column(String(320), nullable=True, index=True)
+    google_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    google_picture: Mapped[str | None] = mapped_column(Text, nullable=True)
+    google_linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 class CreditTransaction(Base):
     __tablename__ = "credit_transactions"
@@ -116,6 +121,11 @@ def migrate_credit_columns():
                 ("credit_accounts", "created_at", "TIMESTAMPTZ DEFAULT NOW()"),
                 ("credit_accounts", "updated_at", "TIMESTAMPTZ DEFAULT NOW()"),
                 ("credit_accounts", "unlimited", "BOOLEAN NOT NULL DEFAULT FALSE"),
+                ("credit_accounts", "google_sub", "VARCHAR(128)"),
+                ("credit_accounts", "google_email", "VARCHAR(320)"),
+                ("credit_accounts", "google_name", "VARCHAR(200)"),
+                ("credit_accounts", "google_picture", "TEXT"),
+                ("credit_accounts", "google_linked_at", "TIMESTAMPTZ"),
                 ("credit_transactions", "visitor_id", "VARCHAR(128)"),
                 ("credit_transactions", "tx_type", "VARCHAR(40) DEFAULT 'adjustment'"),
                 ("credit_transactions", "credits", "INTEGER NOT NULL DEFAULT 0"),
@@ -158,7 +168,7 @@ def migrate_credit_columns():
         elif dialect == "sqlite":
             with engine.begin() as conn:
                 for table, fields in {
-                    "credit_accounts": {"visitor_id":"TEXT", "user_code":"TEXT", "free_credits":"INTEGER NOT NULL DEFAULT 50", "purchased_credits":"INTEGER NOT NULL DEFAULT 0", "month_key":"TEXT NOT NULL DEFAULT ''", "created_at":"DATETIME", "updated_at":"DATETIME", "unlimited":"INTEGER NOT NULL DEFAULT 0"},
+                    "credit_accounts": {"visitor_id":"TEXT", "user_code":"TEXT", "free_credits":"INTEGER NOT NULL DEFAULT 50", "purchased_credits":"INTEGER NOT NULL DEFAULT 0", "month_key":"TEXT NOT NULL DEFAULT ''", "created_at":"DATETIME", "updated_at":"DATETIME", "unlimited":"INTEGER NOT NULL DEFAULT 0", "google_sub":"TEXT", "google_email":"TEXT", "google_name":"TEXT", "google_picture":"TEXT", "google_linked_at":"DATETIME"},
                     "credit_transactions": {"visitor_id":"TEXT", "tx_type":"TEXT DEFAULT 'adjustment'", "credits":"INTEGER NOT NULL DEFAULT 0", "amount":"TEXT", "currency":"TEXT", "package_id":"TEXT", "paypal_order_id":"TEXT", "paypal_capture_id":"TEXT", "status":"TEXT DEFAULT 'completed'", "note":"TEXT", "created_at":"DATETIME"},
                     "paypal_orders": {"order_id":"TEXT", "visitor_id":"TEXT", "package_id":"TEXT", "credits":"INTEGER DEFAULT 0", "amount":"TEXT DEFAULT '0.00'", "currency":"TEXT DEFAULT 'USD'", "status":"TEXT DEFAULT 'created'", "capture_id":"TEXT", "created_at":"DATETIME", "captured_at":"DATETIME"},
                 }.items():
@@ -214,6 +224,7 @@ PAYPAL_CLIENT_SECRET = os.getenv("PAYPAL_CLIENT_SECRET", "").strip()
 PAYPAL_CURRENCY = os.getenv("PAYPAL_CURRENCY", "USD").strip().upper()
 PAYPAL_DOMAIN = os.getenv("PAYPAL_DOMAIN", "").strip()
 PAYPAL_WEBHOOK_ID = os.getenv("PAYPAL_WEBHOOK_ID", "").strip()
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 PAYPAL_TOKEN_CACHE = {"token": None, "expires_at": 0}
 WORKER_HEARTBEAT = {"started_at": None, "last_loop": None, "last_job": None}
 CREDIT_PACKAGES = {
@@ -308,7 +319,7 @@ def account_payload(visitor_id):
     try:
         account = ensure_credit_account(db, visitor_id)
         db.commit()
-        return {"user_code": account.user_code, "free_credits": account.free_credits, "purchased_credits": account.purchased_credits, "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS), "video_cost": int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST), "month": account.month_key}
+        return {"visitor_id": visitor_id, "user_code": account.user_code, "free_credits": account.free_credits, "purchased_credits": account.purchased_credits, "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS), "video_cost": int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST), "month": account.month_key, "google": bool(account.google_sub), "google_email": account.google_email, "google_name": account.google_name, "google_picture": account.google_picture}
     finally:
         db.close()
 
@@ -676,7 +687,7 @@ def mark_failed(job, error):
     finally:
         db.close()
     if visitor and not already_failed:
-        try: refund_download_credits(visitor, job, VIDEO_CREDIT_COST)
+        try: refund_download_credits(visitor, job, int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST))
         except Exception: log.exception("Could not refund credits for failed job %s", job)
 
 def process(job, kind):
@@ -852,18 +863,34 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="18.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="19.0.0", lifespan=lifespan)
 
 @app.exception_handler(Exception)
 async def unhandled_exception(request: Request, exc: Exception):
     log.exception("Unhandled request error %s %s", request.method, request.url.path)
     return JSONResponse(status_code=500, content={"ok": False, "error": "internal_error", "message": "Server error. Check the admin Error Center / Render logs."})
 
+def _cookie_secure():
+    return os.getenv("COOKIE_SECURE", "true").lower() in {"1","true","yes","on"}
+
+def _visitor_from(request: Request, cookie_value: str | None = None):
+    # Cookie is authoritative; X-QuickDL-Visitor is a fallback for browsers that
+    # block third-party/partitioned cookies. The value is an opaque random token.
+    return cookie_value or request.headers.get("x-quickdl-visitor") or uuid.uuid4().hex
+
+def _set_visitor_cookie(response, visitor):
+    response.set_cookie("vexdou_visitor", visitor, max_age=31536000, httponly=True, samesite="lax", secure=_cookie_secure(), path="/")
+    return response
+
 @app.get("/")
-def home():
+def home(request: Request):
     if "setting_bool" in globals() and setting_bool("maintenance"):
-        return FileResponse(BASE / "templates" / "maintenance.html")
-    return FileResponse(BASE / "templates" / "index.html")
+        out = FileResponse(BASE / "templates" / "maintenance.html")
+    else:
+        out = FileResponse(BASE / "templates" / "index.html", headers={"Cache-Control":"no-store"})
+    if not request.cookies.get("vexdou_visitor"):
+        _set_visitor_cookie(out, uuid.uuid4().hex)
+    return out
 
 @app.get("/static/{path:path}")
 def static_file(path: str): return FileResponse(BASE / "static" / path)
@@ -876,14 +903,14 @@ def sw(): return FileResponse(BASE / "sw.js", media_type="application/javascript
 
 @app.get("/api/public-config")
 def public_config():
-    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance"),"credits_enabled":True,"monthly_free":int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS),"video_cost":int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST),"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET),"paypal_mode":PAYPAL_MODE,"paypal_client_id":PAYPAL_CLIENT_ID,"currency":PAYPAL_CURRENCY}
+    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance"),"credits_enabled":True,"monthly_free":int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS),"video_cost":int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST),"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET),"paypal_mode":PAYPAL_MODE,"paypal_client_id":PAYPAL_CLIENT_ID,"currency":PAYPAL_CURRENCY,"google_login_enabled":setting_bool("google_login_enabled"),"google_client_id":GOOGLE_CLIENT_ID}
 
 @app.get("/api/health")
 def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "18.0.0", "worker": WORKER_HEARTBEAT}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "19.0.0", "worker": WORKER_HEARTBEAT}
     finally: db.close()
 
 class DownloadRequest(BaseModel):
@@ -905,7 +932,7 @@ def serialize(row):
     }
 
 @app.post("/api/download")
-def create_download(req: DownloadRequest, vexdou_visitor: str | None = Cookie(default=None)):
+def create_download(req: DownloadRequest, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
     if setting_bool("maintenance"):
         raise HTTPException(503, setting_get("maintenance_message"))
     if not setting_bool("downloads_enabled"):
@@ -920,7 +947,7 @@ def create_download(req: DownloadRequest, vexdou_visitor: str | None = Cookie(de
         raise HTTPException(503, f"{p.title()} downloads are temporarily unavailable.")
     if kind not in {"video", "audio"}: raise HTTPException(400, "Invalid download type")
     if not allowed(url): raise HTTPException(400, "Please enter a valid public HTTP/HTTPS URL")
-    visitor, job = vexdou_visitor or uuid.uuid4().hex, uuid.uuid4().hex
+    visitor, job = _visitor_from(request, vexdou_visitor), uuid.uuid4().hex
     cost = int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST)
     try:
         ok, remaining = debit_download_credits(visitor, job, cost)
@@ -941,36 +968,27 @@ def create_download(req: DownloadRequest, vexdou_visitor: str | None = Cookie(de
         raise
     finally: db.close()
     out = JSONResponse({"ok":True, "job_id":job, "status":"queued", "platform":platform(url), "kind":kind})
-    if not vexdou_visitor:
-        # Secure cookies are required on HTTPS, but disabling Secure here keeps
-        # local HTTP testing functional. Production should always use HTTPS.
-        out.set_cookie(
-            "vexdou_visitor",
-            visitor,
-            max_age=31536000,
-            httponly=True,
-            samesite="lax",
-            secure=bool(os.getenv("COOKIE_SECURE", "true").lower() in {"1","true","yes","on"}),
-        )
+    if not vexdou_visitor or request.headers.get("x-quickdl-visitor"):
+        _set_visitor_cookie(out, visitor)
     return out
 
 @app.get("/api/download/{job}")
-def get_download(job: str, vexdou_visitor: str | None = Cookie(default=None)):
-    if not vexdou_visitor: raise HTTPException(404, "Download not found")
+def get_download(job: str, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
+    visitor = _visitor_from(request, vexdou_visitor)
     db = Session()
     try:
-        row = db.scalar(select(Download).where(Download.job_id == job, Download.visitor_id == vexdou_visitor))
+        row = db.scalar(select(Download).where(Download.job_id == job, Download.visitor_id == visitor))
         if not row: raise HTTPException(404, "Download not found")
         return serialize(row)
     finally: db.close()
 
 @app.get("/api/history")
-def history(vexdou_visitor: str | None = Cookie(default=None)):
-    if not vexdou_visitor: return {"items":[]}
+def history(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
+    visitor = _visitor_from(request, vexdou_visitor)
     db = Session()
     try:
         rows = db.scalars(select(Download).where(
-            Download.visitor_id == vexdou_visitor, Download.status == "completed"
+            Download.visitor_id == visitor, Download.status == "completed"
         ).order_by(Download.created_at.desc()).limit(100)).all()
         items = []
         seen = set()
@@ -989,25 +1007,25 @@ def history(vexdou_visitor: str | None = Cookie(default=None)):
     finally: db.close()
 
 @app.delete("/api/history")
-def clear_history(vexdou_visitor: str | None = Cookie(default=None)):
-    if not vexdou_visitor: return {"ok":True}
+def clear_history(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
+    visitor = _visitor_from(request, vexdou_visitor)
     db = Session()
     try:
-        rows = db.scalars(select(Download).where(Download.visitor_id == vexdou_visitor)).all()
+        rows = db.scalars(select(Download).where(Download.visitor_id == visitor)).all()
         for r in rows: cleanup_job(r.job_id)
-        db.execute(delete(Download).where(Download.visitor_id == vexdou_visitor))
+        db.execute(delete(Download).where(Download.visitor_id == visitor))
         db.commit()
         return {"ok":True}
     finally: db.close()
 
 @app.get("/api/preview/{job}")
-def preview(job: str, vexdou_visitor: str | None = Cookie(default=None)):
+def preview(job: str, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
     """Inline media response for the HTML5 video/audio player."""
-    if not vexdou_visitor: raise HTTPException(404, "File not found")
+    visitor = _visitor_from(request, vexdou_visitor)
     db = Session()
     try:
         row = db.scalar(select(Download).where(
-            Download.job_id == job, Download.visitor_id == vexdou_visitor, Download.status == "completed"
+            Download.job_id == job, Download.visitor_id == visitor, Download.status == "completed"
         ))
         if not row or not row.filename: raise HTTPException(404, "File not found")
         path = WORK / row.filename
@@ -1018,12 +1036,12 @@ def preview(job: str, vexdou_visitor: str | None = Cookie(default=None)):
         db.close()
 
 @app.get("/api/file/{job}")
-def file(job: str, vexdou_visitor: str | None = Cookie(default=None)):
-    if not vexdou_visitor: raise HTTPException(404, "File not found")
+def file(job: str, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
+    visitor = _visitor_from(request, vexdou_visitor)
     db = Session()
     try:
         row = db.scalar(select(Download).where(
-            Download.job_id == job, Download.visitor_id == vexdou_visitor, Download.status == "completed"
+            Download.job_id == job, Download.visitor_id == visitor, Download.status == "completed"
         ))
         if not row or not row.filename: raise HTTPException(404, "File not found")
         path = WORK / row.filename
@@ -1039,12 +1057,12 @@ class PackageRequest(BaseModel):
     package_id: str
 
 @app.get("/api/account")
-def api_account(vexdou_visitor: str | None = Cookie(default=None)):
-    visitor = vexdou_visitor or uuid.uuid4().hex
+def api_account(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
+    visitor = _visitor_from(request, vexdou_visitor)
     data = account_payload(visitor)
     out = JSONResponse({"ok":True, **data})
-    if not vexdou_visitor:
-        out.set_cookie("vexdou_visitor", visitor, max_age=31536000, httponly=True, samesite="lax", secure=True, path="/", domain=None)
+    if not vexdou_visitor or request.headers.get("x-quickdl-visitor"):
+        _set_visitor_cookie(out, visitor)
     return out
 
 @app.get("/api/credits/packages")
@@ -1052,24 +1070,26 @@ def credit_packages():
     return {"currency":PAYPAL_CURRENCY,"video_cost":VIDEO_CREDIT_COST,"monthly_free":MONTHLY_FREE_CREDITS,"packages":[{"id":k,**v} for k,v in CREDIT_PACKAGES.items()]}
 
 @app.get("/api/credits/transactions")
-def credit_transactions(vexdou_visitor: str | None = Cookie(default=None), limit: int = 50):
-    if not vexdou_visitor: return {"items":[]}
+def credit_transactions(request: Request, vexdou_visitor: str | None = Cookie(default=None), limit: int = 50):
+    visitor = _visitor_from(request, vexdou_visitor)
+    if not visitor: return {"items":[]}
     db=Session()
     try:
-        rows=db.scalars(select(CreditTransaction).where(CreditTransaction.visitor_id==vexdou_visitor).order_by(CreditTransaction.created_at.desc()).limit(max(1,min(limit,100)))).all()
+        rows=db.scalars(select(CreditTransaction).where(CreditTransaction.visitor_id==visitor).order_by(CreditTransaction.created_at.desc()).limit(max(1,min(limit,100)))).all()
         return {"items":[{"type":r.tx_type,"credits":r.credits,"amount":r.amount,"currency":r.currency,"package_id":r.package_id,"status":r.status,"note":r.note,"created_at":r.created_at.isoformat() if r.created_at else None} for r in rows]}
     finally: db.close()
 
 @app.get("/api/credits/health")
-def credits_health(vexdou_visitor: str | None = Cookie(default=None)):
+def credits_health(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
     """Safe diagnostic endpoint for the credit initialization path."""
-    visitor = vexdou_visitor or uuid.uuid4().hex
+    visitor = _visitor_from(request, vexdou_visitor)
     db = Session()
     try:
         account = ensure_credit_account(db, visitor)
         payload = {
             "ok": True,
             "has_cookie": bool(vexdou_visitor),
+            "header_fallback": bool(request.headers.get("x-quickdl-visitor")),
             "visitor_id_length": len(visitor),
             "user_code": account.user_code,
             "credits": credit_balance(account),
@@ -1079,8 +1099,8 @@ def credits_health(vexdou_visitor: str | None = Cookie(default=None)):
         }
         db.commit()
         out = JSONResponse(payload)
-        if not vexdou_visitor:
-            out.set_cookie("vexdou_visitor", visitor, max_age=31536000, httponly=True, samesite="lax", secure=True, path="/", domain=None)
+        if not vexdou_visitor or request.headers.get("x-quickdl-visitor"):
+            _set_visitor_cookie(out, visitor)
         return out
     except Exception as exc:
         db.rollback()
@@ -1091,6 +1111,64 @@ def credits_health(vexdou_visitor: str | None = Cookie(default=None)):
             "message": str(exc)[:500],
             "db": engine.dialect.name,
         })
+    finally:
+        db.close()
+
+class GoogleLoginRequest(BaseModel):
+    credential: str
+
+@app.post("/api/auth/google")
+def google_login(data: GoogleLoginRequest, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(503, "Google Login is not configured.")
+    visitor = _visitor_from(request, vexdou_visitor)
+    try:
+        r = requests.get("https://oauth2.googleapis.com/tokeninfo", params={"id_token": data.credential}, timeout=15)
+        if r.status_code >= 400:
+            raise ValueError("Google rejected the sign-in token")
+        info = r.json()
+        if info.get("aud") != GOOGLE_CLIENT_ID:
+            raise ValueError("Google token audience does not match this site")
+        if info.get("iss") not in {"accounts.google.com", "https://accounts.google.com"}:
+            raise ValueError("Invalid Google token issuer")
+        if str(info.get("email_verified", "")).lower() != "true":
+            raise ValueError("Google email is not verified")
+        sub = str(info.get("sub") or "").strip()
+        email = str(info.get("email") or "").strip().lower()
+        name = str(info.get("name") or email.split("@")[0] or "Google User")[:200]
+        picture = str(info.get("picture") or "")[:2000]
+        if not sub or not email:
+            raise ValueError("Google did not return a valid account")
+    except Exception as exc:
+        log.warning("Google sign-in verification failed: %s", exc)
+        raise HTTPException(401, "Google sign-in could not be verified. Please try again.")
+
+    db = Session()
+    try:
+        current = ensure_credit_account(db, visitor)
+        existing = db.scalar(select(CreditAccount).where((CreditAccount.google_sub == sub) | (CreditAccount.google_email == email)).with_for_update())
+        login_open = setting_bool("google_login_enabled")
+        if existing and existing.visitor_id != current.visitor_id:
+            target = existing
+            # Never silently merge anonymous monthly free credits into an existing
+            # Google account; this prevents free-credit farming across browsers.
+            if current.purchased_credits:
+                target.purchased_credits += current.purchased_credits
+                current.purchased_credits = 0
+            target.google_sub=sub; target.google_email=email; target.google_name=name; target.google_picture=picture; target.google_linked_at=datetime.now(timezone.utc)
+            db.commit()
+            payload=account_payload(target.visitor_id)
+            out=JSONResponse({"ok":True,"linked":True,"message":"Google account connected.",**payload})
+            _set_visitor_cookie(out,target.visitor_id)
+            return out
+        if not login_open and not current.google_sub:
+            raise HTTPException(403, "Google Login is currently closed for new users.")
+        current.google_sub=sub; current.google_email=email; current.google_name=name; current.google_picture=picture; current.google_linked_at=datetime.now(timezone.utc); current.updated_at=datetime.now(timezone.utc)
+        db.commit()
+        payload=account_payload(current.visitor_id)
+        out=JSONResponse({"ok":True,"linked":True,"message":"Google account connected.",**payload})
+        _set_visitor_cookie(out,current.visitor_id)
+        return out
     finally:
         db.close()
 
@@ -1107,8 +1185,8 @@ def paypal_health():
         return {"ok": False, "configured": True, "mode": PAYPAL_MODE, "client_id_suffix": PAYPAL_CLIENT_ID[-8:], "base_url": paypal_base(), "status_code": exc.status_code, "message": detail}
 
 @app.post("/paypal-api/checkout/orders/create")
-def paypal_create_order(data: PackageRequest, vexdou_visitor: str | None = Cookie(default=None)):
-    if not vexdou_visitor: raise HTTPException(401,"Your QuickDL session is missing. Refresh and try again.")
+def paypal_create_order(data: PackageRequest, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
+    vexdou_visitor = _visitor_from(request, vexdou_visitor)
     package = CREDIT_PACKAGES.get(data.package_id)
     if not package: raise HTTPException(400,"Invalid credit package.")
     amount = Decimal(package["price"])
@@ -1124,8 +1202,8 @@ def paypal_create_order(data: PackageRequest, vexdou_visitor: str | None = Cooki
     return {"id":order_id}
 
 @app.post("/paypal-api/checkout/orders/{order_id}/capture")
-def paypal_capture_order(order_id: str, vexdou_visitor: str | None = Cookie(default=None)):
-    if not vexdou_visitor: raise HTTPException(401,"QuickDL session missing.")
+def paypal_capture_order(order_id: str, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
+    vexdou_visitor = _visitor_from(request, vexdou_visitor)
     db=Session()
     try:
         po=db.scalar(select(PayPalOrder).where(PayPalOrder.order_id==order_id,PayPalOrder.visitor_id==vexdou_visitor).with_for_update())
@@ -1203,6 +1281,33 @@ async def paypal_webhook(request: Request):
         return {"ok":True,"credited":po.credits}
     finally: db.close()
 
+class ContactRequest(BaseModel):
+    name: str = ""
+    email: str = ""
+    message: str
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy_page():
+    return FileResponse(BASE / "templates" / "privacy.html")
+
+@app.get("/contact", response_class=HTMLResponse)
+def contact_page():
+    return FileResponse(BASE / "templates" / "contact.html")
+
+@app.post("/api/contact")
+def contact_submit(data: ContactRequest, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
+    visitor=_visitor_from(request,vexdou_visitor)
+    message=(data.message or "").strip()
+    if len(message)<3: raise HTTPException(400,"Please enter your message.")
+    if len(message)>5000: raise HTTPException(400,"Message is too long.")
+    db=Session()
+    try:
+        account=ensure_credit_account(db,visitor)
+        row=ContactMessage(visitor_id=visitor,user_code=account.user_code,name=(data.name or "").strip()[:160] or None,email=(data.email or "").strip()[:320] or None,message=message)
+        db.add(row); db.commit(); audit("contact_message",f"user={account.user_code}")
+        return {"ok":True,"message":"Your message has been sent to QuickDL support."}
+    finally: db.close()
+
 # --- Admin18 control center ---
 import hashlib, hmac, base64
 
@@ -1217,6 +1322,17 @@ class AdminAudit(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     action: Mapped[str] = mapped_column(String(160))
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+class ContactMessage(Base):
+    __tablename__ = "contact_messages"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    visitor_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    user_code: Mapped[str | None] = mapped_column(String(10), nullable=True, index=True)
+    name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    message: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(30), default="open", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
 
 Base.metadata.create_all(engine)
@@ -1243,6 +1359,7 @@ DEFAULT_SETTINGS = {
     "max_concurrent_jobs": os.getenv("MAX_CONCURRENT_JOBS", "2"),
     "monthly_free_credits": str(MONTHLY_FREE_CREDITS),
     "video_credit_cost": str(VIDEO_CREDIT_COST),
+    "google_login_enabled": "false",
 }
 
 def setting_get(key):
@@ -1306,7 +1423,7 @@ def admin_system(request: Request):
         for st in ("queued","downloading","completed","failed"):
             counts[st]=db.scalar(select(func.count()).select_from(Download).where(Download.status==st)) or 0
         return {
-            "version":"18.0.0",
+            "version":"19.0.0",
             "python":os.sys.version.split()[0],
             "yt_dlp":getattr(yt_dlp,"version",{}).get("version") if isinstance(getattr(yt_dlp,"version",None),dict) else str(getattr(yt_dlp,"version","unknown")),
             "ffmpeg":shutil.which("ffmpeg") or "missing",
@@ -1318,6 +1435,7 @@ def admin_system(request: Request):
             "paypal_mode":PAYPAL_MODE,
             "paypal_configured":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET),
             "paypal_base":paypal_base(),
+            "google_login_configured":bool(GOOGLE_CLIENT_ID),
             "settings":settings_all(),
         }
     finally: db.close()
@@ -1456,9 +1574,9 @@ def admin_credit_users(request: Request, q: str = "", limit: int = 100):
             if r.created_at and (not x.get("last_seen") or r.created_at>x["last_seen"]): x["last_seen"]=r.created_at
         q=(q or "").strip().lower(); items=[]
         for a in accounts:
-            if q and q not in a.visitor_id.lower() and q not in str(a.user_code or "").lower(): continue
+            if q and q not in a.visitor_id.lower() and q not in str(a.user_code or "").lower() and q not in str(a.google_email or "").lower() and q not in str(a.google_name or "").lower(): continue
             c=counts.get(a.visitor_id,{})
-            items.append({"visitor_id":a.visitor_id,"user_code":a.user_code,"credits":credit_balance(a),"free_credits":a.free_credits,"purchased_credits":a.purchased_credits,"unlimited":bool(getattr(a,"unlimited",False)),"last_seen":c.get("last_seen").isoformat() if c.get("last_seen") else None,"downloads":c.get("downloads",0),"completed":c.get("completed",0),"failed":c.get("failed",0),"updated_at":a.updated_at.isoformat() if a.updated_at else None,"last_seen":c.get("last_seen").isoformat() if c.get("last_seen") else None})
+            items.append({"visitor_id":a.visitor_id,"user_code":a.user_code,"credits":credit_balance(a),"free_credits":a.free_credits,"purchased_credits":a.purchased_credits,"unlimited":bool(getattr(a,"unlimited",False)),"last_seen":c.get("last_seen").isoformat() if c.get("last_seen") else None,"downloads":c.get("downloads",0),"completed":c.get("completed",0),"failed":c.get("failed",0),"updated_at":a.updated_at.isoformat() if a.updated_at else None,"google":bool(a.google_sub),"google_email":a.google_email,"google_name":a.google_name,"google_picture":a.google_picture,"last_seen":c.get("last_seen").isoformat() if c.get("last_seen") else None})
         return {"items":items[:limit]}
     finally: db.close()
 
@@ -1485,6 +1603,7 @@ def admin_user_detail(visitor_id: str, request: Request):
             "account": account_payload(visitor_id),
             "user_code": a.user_code,
             "visitor_id": visitor_id,
+            "google": {"connected": bool(a.google_sub), "email": a.google_email, "name": a.google_name, "picture": a.google_picture},
             "transactions":[{"type":r.tx_type,"credits":r.credits,"amount":r.amount,"currency":r.currency,"package_id":r.package_id,"status":r.status,"note":r.note,"created_at":r.created_at.isoformat() if r.created_at else None} for r in rows],
             "downloads":[{"job_id":r.job_id,"url":r.url,"title":r.title,"platform":platform(r.url),"status":r.status,"error":r.error,"created_at":r.created_at.isoformat() if r.created_at else None} for r in downloads],
         }
@@ -1534,6 +1653,28 @@ def admin_revenue(request: Request):
         rows=db.scalars(select(CreditTransaction).where(CreditTransaction.tx_type=="purchase",CreditTransaction.status=="completed").order_by(CreditTransaction.created_at.desc()).limit(5000)).all()
         total=sum(float(r.amount or 0) for r in rows); credits=sum(int(r.credits or 0) for r in rows)
         return {"total_revenue":round(total,2),"purchased_credits":credits,"transactions":len(rows),"items":[{"visitor_id":r.visitor_id,"amount":r.amount,"currency":r.currency,"credits":r.credits,"package_id":r.package_id,"order_id":r.paypal_order_id,"created_at":r.created_at.isoformat() if r.created_at else None} for r in rows[:100]]}
+    finally: db.close()
+
+@app.get("/api/admin/messages")
+def admin_messages(request: Request, limit: int = 200):
+    require_admin(request); db=Session()
+    try:
+        rows=db.scalars(select(ContactMessage).order_by(ContactMessage.created_at.desc()).limit(max(1,min(limit,500)))).all()
+        return {"items":[{"id":r.id,"user_code":r.user_code,"name":r.name,"email":r.email,"message":r.message,"status":r.status,"created_at":r.created_at.isoformat() if r.created_at else None} for r in rows]}
+    finally: db.close()
+
+class AdminMessageAction(BaseModel):
+    id: int
+    status: str = "closed"
+
+@app.post("/api/admin/messages/status")
+def admin_message_status(data: AdminMessageAction, request: Request):
+    require_admin(request); db=Session()
+    try:
+        row=db.get(ContactMessage,data.id)
+        if not row: raise HTTPException(404,"Message not found")
+        row.status=data.status if data.status in {"open","closed"} else "open"; db.commit(); audit("message_status",f"{data.id}: {row.status}")
+        return {"ok":True}
     finally: db.close()
 
 @app.post("/api/admin/settings")

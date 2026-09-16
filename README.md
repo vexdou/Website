@@ -1,29 +1,52 @@
-# QuickDL v18
+# QuickDL v19
 
-QuickDL v18 is a public-media downloader with a persistent credit wallet, LIVE PayPal checkout, 10-digit user IDs, Unlimited admin controls, download recovery, diagnostics, and a full responsive admin control center.
+Production-oriented public-media downloader with a persistent browser account, 10-digit User IDs, credits, PayPal Live checkout, Google Sign-In controls, support messages, and admin controls.
 
-## User system
-- 10-digit stable User ID is shown in the website header.
-- 50 monthly free credits by default.
+## Important deployment settings
+
+```env
+DATABASE_URL=postgresql://...
+ADMIN_PASSWORD=...
+ADMIN_SESSION_SECRET=...
+MONTHLY_FREE_CREDITS=50
+VIDEO_CREDIT_COST=2
+MAX_CONCURRENT_JOBS=2
+COOKIE_SECURE=true
+
+PAYPAL_MODE=live
+PAYPAL_CLIENT_ID=...
+PAYPAL_CLIENT_SECRET=...
+PAYPAL_CURRENCY=USD
+PAYPAL_DOMAIN=https://quickdl.site
+PAYPAL_WEBHOOK_ID=...
+
+GOOGLE_CLIENT_ID=YOUR_GOOGLE_WEB_CLIENT_ID
+```
+
+### Google Sign-In
+
+Create a Google OAuth/Web client and add `https://quickdl.site` as an Authorized JavaScript origin. Put the Web Client ID in `GOOGLE_CLIENT_ID`.
+
+Admin controls are under **Settings → Google Login Control**:
+- **Open Login**: new visitors can connect Google.
+- **Close Login**: hides Google login for new visitors; already-linked Google accounts can still connect.
+
+### Stable User ID
+
+Each browser gets a first-party `vexdou_visitor` cookie valid for one year. The same opaque visitor token is also kept as a browser fallback so refreshes do not create a new account. The account receives one permanent 10-digit User ID stored in PostgreSQL.
+
+### Credits
+
+- 50 free credits/month by default.
+- 2 credits per video by default.
 - Free credits are used before purchased credits.
-- Users are not asked to buy credits while they still have enough credits for a download.
 - Purchased credits do not expire.
-- Admin can grant/revoke any number of credits.
-- Admin can enable/disable Unlimited.
-- No gift system.
+- Admin can add/remove any number of credits and enable/disable Unlimited per user.
 
-## Admin
-- Overview, Users, Credits, Payments, Downloads, Errors, Settings, Audit, System.
-- Search/manage users by 10-digit User ID.
-- Configure monthly free credits and per-download cost.
-- Configure platform switches, maintenance, announcements, file limits, retention, and concurrency.
-- Retry/delete jobs and inspect errors.
+### Support
 
-## Payments
-- LIVE PayPal Orders + Capture + webhook verification.
-- PayPal client secret remains server-side.
+Users can use `/contact`; messages appear in **Admin → Messages**.
 
-## Downloads
-- Public media only; no private/login/DRM/CAPTCHA bypass.
-- Worker recovery and failed-download credit refunds.
-- Supported platform routing for YouTube, TikTok, Instagram, Facebook, Pinterest, X/Twitter, Snapchat and generic public web media.
+### Public-media limitation
+
+The downloader is for publicly accessible media. It does not bypass private accounts, DRM, CAPTCHA, login/access controls, or other access restrictions.
