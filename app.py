@@ -1065,10 +1065,16 @@ def worker_loop():
 
 @asynccontextmanager
 async def lifespan(app):
+    # Repair/migrate legacy PostgreSQL schemas before accepting API traffic.
+    try:
+        repair_database_schema()
+        log.info("database schema check completed")
+    except Exception:
+        log.exception("database startup repair failed")
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="31.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="32.0.0", lifespan=lifespan)
 
 def record_app_error(ref, request, exc, status=500):
     try:
@@ -1132,7 +1138,7 @@ def sw(): return FileResponse(BASE / "sw.js", media_type="application/javascript
 def public_config():
     db = Session()
     try:
-        return {"announcement_enabled":setting_bool("announcement_enabled", db),"announcement":setting_get("announcement", db),"maintenance":setting_bool("maintenance", db),"credits_enabled":True,"monthly_free":int(setting_get("monthly_free_credits", db) or MONTHLY_FREE_CREDITS),"video_cost":int(setting_get("video_credit_cost", db) or VIDEO_CREDIT_COST),"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET and PAYPAL_MODE=="live"),"paypal_live_ready":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET and PAYPAL_MODE=="live"),"paypal_client_id":PAYPAL_CLIENT_ID if PAYPAL_MODE=="live" else "","currency":PAYPAL_CURRENCY,"google_login_enabled":setting_bool("google_login_enabled", db),"google_client_id":GOOGLE_CLIENT_ID,"login_enabled":setting_bool("login_enabled", db),"email_auth_configured":bool(SMTP_PASSWORD or RESEND_API_KEY),"ads_enabled":setting_bool("ads_enabled", db),"ads_text":setting_get("ads_text", db),"ads_url":setting_get("ads_url", db),"ads_button_text":setting_get("ads_button_text", db)}
+        return {"announcement_enabled":setting_bool("announcement_enabled", db),"announcement":setting_get("announcement", db),"maintenance":setting_bool("maintenance", db),"credits_enabled":setting_bool("credits_enabled", db),"monthly_free":int(setting_get("monthly_free_credits", db) or MONTHLY_FREE_CREDITS),"video_cost":int(setting_get("video_credit_cost", db) or VIDEO_CREDIT_COST),"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET and PAYPAL_MODE=="live"),"paypal_live_ready":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET and PAYPAL_MODE=="live"),"paypal_client_id":PAYPAL_CLIENT_ID if PAYPAL_MODE=="live" else "","currency":PAYPAL_CURRENCY,"google_login_enabled":setting_bool("google_login_enabled", db),"google_client_id":GOOGLE_CLIENT_ID,"login_enabled":setting_bool("login_enabled", db),"email_auth_configured":bool(SMTP_PASSWORD or RESEND_API_KEY),"ads_enabled":setting_bool("ads_enabled", db),"ads_text":setting_get("ads_text", db),"ads_url":setting_get("ads_url", db),"ads_button_text":setting_get("ads_button_text", db)}
     finally:
         db.close()
 
@@ -1142,7 +1148,7 @@ def healthz():
     try:
         db.execute(text("SELECT 1"))
         db.execute(select(Download.id).limit(1))
-        return {"status":"ok","service":"quickdl","version":"30.0.0","database":"ok","worker_started":bool(WORKER_HEARTBEAT.get("started_at"))}
+        return {"status":"ok","service":"quickdl","version":"32.0.0","database":"ok","worker_started":bool(WORKER_HEARTBEAT.get("started_at"))}
     except Exception as exc:
         log.exception("health check failed: %s", exc)
         raise HTTPException(503, "QuickDL is temporarily unavailable. Please try again shortly.") from exc
@@ -1373,6 +1379,39 @@ def api_account(request: Request, vexdou_visitor: str | None = Cookie(default=No
 @app.get("/api/credits/packages")
 def credit_packages():
     return {"currency":PAYPAL_CURRENCY,"video_cost":VIDEO_CREDIT_COST,"monthly_free":MONTHLY_FREE_CREDITS,"packages":[{"id":k,**v} for k,v in CREDIT_PACKAGES.items()]}
+
+@app.get("/api/credits")
+def credits_compat(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
+    """Backward-compatible credits endpoint for older static clients.
+    The canonical frontend uses /api/account + /api/credits/packages.
+    """
+    visitor = _visitor_from(request, vexdou_visitor)
+    payload = account_payload(visitor)
+    return {**payload, "balance": payload["credits"], "cost": payload["video_cost"],
+            "packages": [{"id":k, **v, "amount_cents": int(Decimal(v["price"])*100)} for k,v in CREDIT_PACKAGES.items()]}
+
+@app.post("/api/credits/checkout")
+def credits_checkout_compat(data: PackageRequest, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
+    """Compatibility checkout route; creates a PayPal order and returns its approval URL."""
+    visitor = _visitor_from(request, vexdou_visitor)
+    package = CREDIT_PACKAGES.get(data.package_id)
+    if not package:
+        raise HTTPException(400, "Invalid credit package.")
+    amount = Decimal(package["price"])
+    payload = {"intent":"CAPTURE","purchase_units":[{"reference_id":data.package_id,"custom_id":data.package_id,
+        "description":f"QuickDL {package['credits']} Credits",
+        "amount":{"currency_code":PAYPAL_CURRENCY,"value":f"{amount:.2f}"}}],
+        "application_context":{"return_url":f"{PAYPAL_DOMAIN}/?payment=success","cancel_url":f"{PAYPAL_DOMAIN}/?payment=cancelled"}}
+    order = paypal_json("POST", "/v2/checkout/orders", payload, request_id=uuid.uuid4().hex)
+    order_id = order.get("id")
+    if not order_id: raise HTTPException(502, "PayPal did not return an order ID.")
+    db=Session()
+    try:
+        db.add(PayPalOrder(order_id=order_id, visitor_id=visitor, package_id=data.package_id, credits=package["credits"], amount=f"{amount:.2f}", currency=PAYPAL_CURRENCY, status="created"))
+        db.commit()
+    finally: db.close()
+    approval = next((x.get("href") for x in (order.get("links") or []) if x.get("rel") in {"approve","payer-action"}), None)
+    return {"ok":True,"id":order_id,"url":approval,"approval_url":approval}
 
 @app.get("/api/credits/transactions")
 def credit_transactions(request: Request, vexdou_visitor: str | None = Cookie(default=None), limit: int = 50):
@@ -2013,6 +2052,7 @@ DEFAULT_SETTINGS = {
     "max_concurrent_jobs": os.getenv("MAX_CONCURRENT_JOBS", "2"),
     "monthly_free_credits": str(MONTHLY_FREE_CREDITS),
     "video_credit_cost": str(VIDEO_CREDIT_COST),
+    "credits_enabled": "true",
     "google_login_enabled": "true",
     "login_enabled": "true",
     "ads_enabled": "false",
@@ -2111,7 +2151,7 @@ def admin_system(request: Request):
         for st in ("queued","downloading","completed","failed"):
             counts[st]=db.scalar(select(func.count()).select_from(Download).where(Download.status==st)) or 0
         return {
-            "version":"30.0.0",
+            "version":"32.0.0",
             "python":os.sys.version.split()[0],
             "yt_dlp":getattr(yt_dlp,"version",{}).get("version") if isinstance(getattr(yt_dlp,"version",None),dict) else str(getattr(yt_dlp,"version","unknown")),
             "ffmpeg":shutil.which("ffmpeg") or "missing",
@@ -2335,6 +2375,29 @@ def admin_grant_credits(data: AdminCreditAction, request: Request):
         if data.credits or data.unlimited is not None:
             queue_user_email(target, "QuickDL account credit update", "Your account was updated", f"An administrator updated your QuickDL account. Credits added: {data.credits:,}." + (" Unlimited access was enabled." if data.unlimited else ""), "ADMIN ACCOUNT UPDATE")
         return {"ok":True,**account_payload(target)}
+    finally: db.close()
+
+@app.post("/api/admin/credits/adjust")
+def admin_adjust_compat(data: dict, request: Request):
+    """Compatibility wrapper for the previous admin credit UI."""
+    visitor_id = str(data.get("visitor_id") or "").strip()
+    amount = int(data.get("amount") or 0)
+    reason = str(data.get("description") or "Admin adjustment")[:1000]
+    if not visitor_id or not re.fullmatch(r"[a-f0-9]{32}", visitor_id):
+        raise HTTPException(400, "Invalid visitor ID.")
+    require_admin(request)
+    db=Session()
+    try:
+        a=ensure_credit_account(db, visitor_id)
+        if amount >= 0:
+            a.purchased_credits += amount
+            tx=CreditTransaction(visitor_id=visitor_id, tx_type="admin_grant", credits=amount, status="completed", note=reason)
+        else:
+            remove=min(-amount, max(0,int(a.purchased_credits or 0)))
+            a.purchased_credits-=remove
+            tx=CreditTransaction(visitor_id=visitor_id, tx_type="admin_revoke", credits=-remove, status="completed", note=reason)
+        a.updated_at=datetime.now(timezone.utc); db.add(tx); db.commit(); audit("admin_credit_adjustment_compat", f"{visitor_id}: {amount}")
+        return {"ok":True,"balance":credit_balance(a),**account_payload(visitor_id)}
     finally: db.close()
 
 @app.post("/api/admin/credits/revoke")

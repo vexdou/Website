@@ -1,39 +1,33 @@
-# QuickDL v29 — audited Render build
+# QuickDL v32 — Full Complete
 
-QuickDL is a FastAPI + PostgreSQL media downloader with monthly credits, account authentication, Google Sign-In, PayPal LIVE credit purchases, an admin control center, PWA support, and a background download worker.
+QuickDL is a FastAPI + PostgreSQL media downloader with a credit system, email/password authentication, optional Google Sign-In, PayPal LIVE checkout, admin controls, history/favorites, background downloads, diagnostics and PWA assets.
 
-## v29 audit fixes
+## Deploy
 
-- Fixed Render/production connection-pool pressure by reusing the active SQLAlchemy session for account/settings reads instead of opening nested database sessions on the same request.
-- Added configurable `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, and PostgreSQL `DB_CONNECT_TIMEOUT`.
-- `/healthz` now verifies both the database connection and the downloads table instead of returning OK when the application process is alive but the database is unavailable.
-- Render Blueprint health check is `/healthz`.
-- Preserved the existing safe public error masking and admin Error Center.
-- Preserved 50 monthly free credits, 2-credit video downloads, purchased credits, admin adjustments, and PayPal LIVE flow.
-- Preserved Deno + yt-dlp EJS support. `requirements.txt` uses a valid stable 2026 yt-dlp constraint.
-- Added `og:video:url` to the public metadata fallback.
+1. Push/upload the entire project directory to the repository used by Render.
+2. Use Docker deployment.
+3. Set `DATABASE_URL` to the production PostgreSQL connection string.
+4. Set `ADMIN_PASSWORD` and a long random `ADMIN_SESSION_SECRET`.
+5. For email verification on Render Free, configure Resend HTTPS and a verified sending domain.
+6. For payments, configure valid PayPal LIVE client credentials and the LIVE webhook ID.
+7. For Google Sign-In, configure the Google Web Client ID and the authorized JavaScript origin for the production domain.
 
-## Render
+## Runtime diagnostics
 
-Use Docker. Keep the required environment variables in Render. Never commit secrets to GitHub.
+- `/healthz` checks database connectivity and downloader worker startup.
+- `/api/health` checks core database tables and returns safe runtime information.
+- `/api/ready` checks database readiness.
+- `/paypal-api/health` reports non-secret PayPal configuration/connectivity status.
+- Admin Error Center stores server-side application failures without exposing provider/database details to public users.
 
-Recommended Blueprint health check:
+## Credits
 
-`/healthz`
+- 50 free credits per month by default.
+- Video downloads cost 2 credits by default.
+- Purchased credits do not expire.
+- Admin can grant, revoke and enable unlimited access.
+- Packages: 100/$1.99, 500/$6.99, 1,200/$14.99, 3,000/$29.99, 7,500/$59.99.
 
-The Dockerfile listens on Render's `$PORT` and installs FFmpeg plus Deno.
+## Important
 
-## Email
-
-For Render Free, use Resend over HTTPS:
-
-- `EMAIL_PROVIDER=resend`
-- `RESEND_API_KEY=...`
-- `RESEND_FROM=QuickDL <support@quickdl.site>`
-- `RESEND_REPLY_TO=support@quickdl.site`
-
-The sender domain must be verified in Resend.
-
-## Important limitation
-
-The downloader only handles public media. It does not bypass private accounts, authentication walls, DRM, CAPTCHAs, or other access controls. Social platforms can change their public pages or rate-limit automated requests, so source-specific availability can change independently of QuickDL's code.
+Third-party media providers can change their delivery systems. QuickDL supports public media only and does not bypass private access, DRM or CAPTCHA protections.
