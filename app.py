@@ -407,17 +407,49 @@ def refund_download_credits(visitor_id, job_id, cost):
     finally:
         db.close()
 
-def account_payload(visitor_id):
-    db = Session()
-    try:
-        account = ensure_credit_account(db, visitor_id)
-        monthly_free = int(setting_get("monthly_free_credits", db) or MONTHLY_FREE_CREDITS)
-        video_cost = int(setting_get("video_credit_cost", db) or VIDEO_CREDIT_COST)
-        db.commit()
-        return {"visitor_id": visitor_id, "user_code": account.user_code, "free_credits": account.free_credits, "purchased_credits": account.purchased_credits, "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": monthly_free, "video_cost": video_cost, "month": account.month_key, "google": bool(account.google_sub), "google_email": account.google_email, "google_name": account.google_name, "google_picture": account.google_picture, "email": account.email, "email_verified": bool(getattr(account, "email_verified", False)), "auth_name": account.auth_name, "authenticated": bool(account.google_sub or account.email_verified), "display_name": account.google_name or account.auth_name or account.google_email or account.email, "welcome_email_sent": bool(getattr(account, "welcome_email_sent_at", None) or getattr(account, "google_welcome_sent_at", None))}
-    finally:
-        db.close()
+def repair_database_schema():
+    """Best-effort runtime repair for older Render databases.
 
+    Deployments can survive across schema generations; if a request hits an
+    older database before the startup migration completed, repair the schema
+    and retry the request instead of leaving Account/Credits/Download unusable.
+    """
+    try:
+        Base.metadata.create_all(engine)
+    except Exception:
+        log.exception("runtime create_all failed")
+    try:
+        migrate_credit_columns()
+    except Exception:
+        log.exception("runtime credit migration failed")
+    try:
+        backfill_user_codes()
+    except Exception:
+        log.exception("runtime user-code backfill failed")
+
+
+def account_payload(visitor_id):
+    last_exc = None
+    for attempt in range(2):
+        db = Session()
+        try:
+            account = ensure_credit_account(db, visitor_id)
+            monthly_free = max(0, int(setting_get("monthly_free_credits", db) or MONTHLY_FREE_CREDITS))
+            video_cost = max(0, int(setting_get("video_credit_cost", db) or VIDEO_CREDIT_COST))
+            db.commit()
+            return {"visitor_id": visitor_id, "user_code": account.user_code, "free_credits": int(account.free_credits or 0), "purchased_credits": int(account.purchased_credits or 0), "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": monthly_free, "video_cost": video_cost, "month": account.month_key, "google": bool(account.google_sub), "google_email": account.google_email, "google_name": account.google_name, "google_picture": account.google_picture, "email": account.email, "email_verified": bool(getattr(account, "email_verified", False)), "auth_name": account.auth_name, "authenticated": bool(account.google_sub or account.email_verified), "display_name": account.google_name or account.auth_name or account.google_email or account.email, "welcome_email_sent": bool(getattr(account, "welcome_email_sent_at", None) or getattr(account, "google_welcome_sent_at", None))}
+        except Exception as exc:
+            last_exc = exc
+            try: db.rollback()
+            except Exception: pass
+            if attempt == 0:
+                log.exception("account payload failed; attempting schema repair")
+                repair_database_schema()
+                continue
+            raise
+        finally:
+            db.close()
+    raise last_exc or RuntimeError("account initialization failed")
 def paypal_base():
     return "https://api-m.paypal.com" if PAYPAL_MODE == "live" else "https://api-m.sandbox.paypal.com"
 
@@ -1036,7 +1068,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="27.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="30.0.0", lifespan=lifespan)
 
 def record_app_error(ref, request, exc, status=500):
     try:
@@ -1110,7 +1142,7 @@ def healthz():
     try:
         db.execute(text("SELECT 1"))
         db.execute(select(Download.id).limit(1))
-        return {"status":"ok","service":"quickdl","version":"29.0.0","database":"ok","worker_started":bool(WORKER_HEARTBEAT.get("started_at"))}
+        return {"status":"ok","service":"quickdl","version":"30.0.0","database":"ok","worker_started":bool(WORKER_HEARTBEAT.get("started_at"))}
     except Exception as exc:
         log.exception("health check failed: %s", exc)
         raise HTTPException(503, "QuickDL is temporarily unavailable. Please try again shortly.") from exc
@@ -1122,7 +1154,9 @@ def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "29.0.0", "worker": WORKER_HEARTBEAT}
+        db.execute(select(CreditAccount.id).limit(1))
+        db.execute(select(AdminSetting.key).limit(1))
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "30.0.0", "worker": WORKER_HEARTBEAT}
     except Exception:
         raise HTTPException(503, "QuickDL is temporarily unavailable. Please try again shortly.")
     finally: db.close()
@@ -2077,7 +2111,7 @@ def admin_system(request: Request):
         for st in ("queued","downloading","completed","failed"):
             counts[st]=db.scalar(select(func.count()).select_from(Download).where(Download.status==st)) or 0
         return {
-            "version":"29.0.0",
+            "version":"30.0.0",
             "python":os.sys.version.split()[0],
             "yt_dlp":getattr(yt_dlp,"version",{}).get("version") if isinstance(getattr(yt_dlp,"version",None),dict) else str(getattr(yt_dlp,"version","unknown")),
             "ffmpeg":shutil.which("ffmpeg") or "missing",
