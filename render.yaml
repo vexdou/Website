@@ -4,4 +4,4 @@ services:
     env: docker
     plan: free
     autoDeploy: true
-    healthCheckPath: /api/health
+    healthCheckPath: /healthz

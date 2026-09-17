@@ -42,7 +42,12 @@ if DB_URL.startswith("postgres://"):
 elif DB_URL.startswith("postgresql://"):
     DB_URL = DB_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
 
-engine = create_engine(DB_URL, pool_pre_ping=True, pool_recycle=300, pool_size=3, max_overflow=2)
+DB_POOL_SIZE = max(2, int(os.getenv("DB_POOL_SIZE", "5")))
+DB_MAX_OVERFLOW = max(0, int(os.getenv("DB_MAX_OVERFLOW", "5")))
+_engine_kwargs = dict(pool_pre_ping=True, pool_recycle=300, pool_size=DB_POOL_SIZE, max_overflow=DB_MAX_OVERFLOW)
+if DB_URL.startswith("postgresql+"):
+    _engine_kwargs["connect_args"] = {"connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "10"))}
+engine = create_engine(DB_URL, **_engine_kwargs)
 Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 class Base(DeclarativeBase):
@@ -302,7 +307,7 @@ def ensure_credit_account(db, visitor_id):
     if not visitor_id or not re.fullmatch(r"[a-f0-9]{32}", str(visitor_id)):
         raise ValueError("invalid visitor_id")
     month = current_month_key()
-    monthly_free = max(0, int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS))
+    monthly_free = max(0, int(setting_get("monthly_free_credits", db) or MONTHLY_FREE_CREDITS))
     now = datetime.now(timezone.utc)
 
     account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
@@ -406,8 +411,10 @@ def account_payload(visitor_id):
     db = Session()
     try:
         account = ensure_credit_account(db, visitor_id)
+        monthly_free = int(setting_get("monthly_free_credits", db) or MONTHLY_FREE_CREDITS)
+        video_cost = int(setting_get("video_credit_cost", db) or VIDEO_CREDIT_COST)
         db.commit()
-        return {"visitor_id": visitor_id, "user_code": account.user_code, "free_credits": account.free_credits, "purchased_credits": account.purchased_credits, "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS), "video_cost": int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST), "month": account.month_key, "google": bool(account.google_sub), "google_email": account.google_email, "google_name": account.google_name, "google_picture": account.google_picture, "email": account.email, "email_verified": bool(getattr(account, "email_verified", False)), "auth_name": account.auth_name, "authenticated": bool(account.google_sub or account.email_verified), "display_name": account.google_name or account.auth_name or account.google_email or account.email, "welcome_email_sent": bool(getattr(account, "welcome_email_sent_at", None) or getattr(account, "google_welcome_sent_at", None))}
+        return {"visitor_id": visitor_id, "user_code": account.user_code, "free_credits": account.free_credits, "purchased_credits": account.purchased_credits, "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": monthly_free, "video_cost": video_cost, "month": account.month_key, "google": bool(account.google_sub), "google_email": account.google_email, "google_name": account.google_name, "google_picture": account.google_picture, "email": account.email, "email_verified": bool(getattr(account, "email_verified", False)), "auth_name": account.auth_name, "authenticated": bool(account.google_sub or account.email_verified), "display_name": account.google_name or account.auth_name or account.google_email or account.email, "welcome_email_sent": bool(getattr(account, "welcome_email_sent_at", None) or getattr(account, "google_welcome_sent_at", None))}
     finally:
         db.close()
 
@@ -723,6 +730,7 @@ def public_og_video_fallback(job, url, kind, source_name):
         return None
     media_url=(
         _extract_meta(html,"og:video:secure_url")
+        or _extract_meta(html,"og:video:url")
         or _extract_meta(html,"og:video")
         or _extract_meta(html,"twitter:player:stream")
     )
@@ -1090,18 +1098,31 @@ def sw(): return FileResponse(BASE / "sw.js", media_type="application/javascript
 
 @app.get("/api/public-config")
 def public_config():
-    return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance"),"credits_enabled":True,"monthly_free":int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS),"video_cost":int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST),"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET and PAYPAL_MODE=="live"),"paypal_live_ready":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET and PAYPAL_MODE=="live"),"paypal_client_id":PAYPAL_CLIENT_ID if PAYPAL_MODE=="live" else "","currency":PAYPAL_CURRENCY,"google_login_enabled":setting_bool("google_login_enabled"),"google_client_id":GOOGLE_CLIENT_ID,"login_enabled":setting_bool("login_enabled"),"email_auth_configured":bool(SMTP_PASSWORD or RESEND_API_KEY),"ads_enabled":setting_bool("ads_enabled"),"ads_text":setting_get("ads_text"),"ads_url":setting_get("ads_url"),"ads_button_text":setting_get("ads_button_text")}
+    db = Session()
+    try:
+        return {"announcement_enabled":setting_bool("announcement_enabled", db),"announcement":setting_get("announcement", db),"maintenance":setting_bool("maintenance", db),"credits_enabled":True,"monthly_free":int(setting_get("monthly_free_credits", db) or MONTHLY_FREE_CREDITS),"video_cost":int(setting_get("video_credit_cost", db) or VIDEO_CREDIT_COST),"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET and PAYPAL_MODE=="live"),"paypal_live_ready":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET and PAYPAL_MODE=="live"),"paypal_client_id":PAYPAL_CLIENT_ID if PAYPAL_MODE=="live" else "","currency":PAYPAL_CURRENCY,"google_login_enabled":setting_bool("google_login_enabled", db),"google_client_id":GOOGLE_CLIENT_ID,"login_enabled":setting_bool("login_enabled", db),"email_auth_configured":bool(SMTP_PASSWORD or RESEND_API_KEY),"ads_enabled":setting_bool("ads_enabled", db),"ads_text":setting_get("ads_text", db),"ads_url":setting_get("ads_url", db),"ads_button_text":setting_get("ads_button_text", db)}
+    finally:
+        db.close()
 
 @app.get("/healthz")
 def healthz():
-    return {"status":"ok","service":"quickdl","version":"28.0.0"}
+    db = Session()
+    try:
+        db.execute(text("SELECT 1"))
+        db.execute(select(Download.id).limit(1))
+        return {"status":"ok","service":"quickdl","version":"29.0.0","database":"ok","worker_started":bool(WORKER_HEARTBEAT.get("started_at"))}
+    except Exception as exc:
+        log.exception("health check failed: %s", exc)
+        raise HTTPException(503, "QuickDL is temporarily unavailable. Please try again shortly.") from exc
+    finally:
+        db.close()
 
 @app.get("/api/health")
 def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "28.0.0", "worker": WORKER_HEARTBEAT}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "29.0.0", "worker": WORKER_HEARTBEAT}
     except Exception:
         raise HTTPException(503, "QuickDL is temporarily unavailable. Please try again shortly.")
     finally: db.close()
@@ -1966,13 +1987,16 @@ DEFAULT_SETTINGS = {
     "ads_button_text": "Learn more",
 }
 
-def setting_get(key):
-    db = Session()
+def setting_get(key, db=None):
+    """Read one admin setting, reusing a caller session when provided."""
+    own = db is None
+    db = db or Session()
     try:
         row = db.get(AdminSetting, key)
         return row.value if row else DEFAULT_SETTINGS.get(key, "")
     finally:
-        db.close()
+        if own:
+            db.close()
 
 def settings_all():
     db = Session()
@@ -1982,8 +2006,8 @@ def settings_all():
         return vals
     finally: db.close()
 
-def setting_bool(key):
-    return setting_get(key).lower() in {"1", "true", "yes", "on"}
+def setting_bool(key, db=None):
+    return setting_get(key, db).lower() in {"1", "true", "yes", "on"}
 
 def bootstrap_access_settings():
     """Migrate the old closed-by-default access flags once on v28.
@@ -2053,7 +2077,7 @@ def admin_system(request: Request):
         for st in ("queued","downloading","completed","failed"):
             counts[st]=db.scalar(select(func.count()).select_from(Download).where(Download.status==st)) or 0
         return {
-            "version":"25.0.0",
+            "version":"29.0.0",
             "python":os.sys.version.split()[0],
             "yt_dlp":getattr(yt_dlp,"version",{}).get("version") if isinstance(getattr(yt_dlp,"version",None),dict) else str(getattr(yt_dlp,"version","unknown")),
             "ffmpeg":shutil.which("ffmpeg") or "missing",
@@ -2145,7 +2169,7 @@ def admin_overview(request: Request):
             status[r.status] = status.get(r.status, 0) + 1
             p = platform(r.url); plats[p] = plats.get(p, 0) + 1
         users = len({r.visitor_id for r in rows})
-        return {"version":"27.0.0-admin", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
+        return {"version":"29.0.0-admin", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
     finally: db.close()
 
 @app.get("/api/admin/users")

@@ -1,68 +1,39 @@
-# QuickDL v27
+# QuickDL v29 — audited Render build
 
-Production-oriented QuickDL build for Render + PostgreSQL.
+QuickDL is a FastAPI + PostgreSQL media downloader with monthly credits, account authentication, Google Sign-In, PayPal LIVE credit purchases, an admin control center, PWA support, and a background download worker.
 
-## Major fixes in v27
-- Hardened credit-account initialization with transaction-safe SAVEPOINT creation and race handling.
-- Stable 10-digit User ID is shown only through the dedicated **Get ID** button.
-- Rebuilt `index.html` with a cleaner responsive UI, organized buttons, polished downloader, progress state, preview/result card, History, Favorites, Credits and account sheets.
-- Google Sign-In with server-side ID-token verification.
-- Google first-login welcome email is optional and never blocks Google login if mail delivery fails.
-- Email signup/verification/login/forgot/reset flow.
-- Email delivery supports **Resend over HTTPS** and direct **Spacemail SMTP**.
-- Admin email diagnostics identify the active provider and SMTP timeout cause.
-- Admin credit management by 10-digit User ID: add, remove, unlimited, reset and view.
-- Admin Ads Manager.
-- Downloader worker diagnostics, retries, refunds and public-media extraction.
-- FFmpeg + Node are installed in the Docker image for media post-processing.
+## v29 audit fixes
 
-## Email on Render
-Render Free web services block outbound SMTP ports **25, 465 and 587**. Therefore direct Spacemail SMTP cannot work from a Free Render web service, and a timeout from `mail.spacemail.com:465` is expected in that environment. Use one of these configurations:
+- Fixed Render/production connection-pool pressure by reusing the active SQLAlchemy session for account/settings reads instead of opening nested database sessions on the same request.
+- Added configurable `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, and PostgreSQL `DB_CONNECT_TIMEOUT`.
+- `/healthz` now verifies both the database connection and the downloads table instead of returning OK when the application process is alive but the database is unavailable.
+- Render Blueprint health check is `/healthz`.
+- Preserved the existing safe public error masking and admin Error Center.
+- Preserved 50 monthly free credits, 2-credit video downloads, purchased credits, admin adjustments, and PayPal LIVE flow.
+- Preserved Deno + yt-dlp EJS support. `requirements.txt` uses a valid stable 2026 yt-dlp constraint.
+- Added `og:video:url` to the public metadata fallback.
 
-### Option A — Free Render + Resend (recommended for free hosting)
-Keep the visible sender as `support@quickdl.site`, but verify `quickdl.site` in Resend and set:
+## Render
 
-```env
-EMAIL_PROVIDER=auto
-RESEND_API_KEY=YOUR_RESEND_API_KEY
-RESEND_FROM=QuickDL <support@quickdl.site>
-```
+Use Docker. Keep the required environment variables in Render. Never commit secrets to GitHub.
 
-The app sends through Resend's HTTPS API, so it does not need outbound SMTP.
+Recommended Blueprint health check:
 
-### Option B — Paid Render + Spacemail SMTP
-If the Render service can make outbound SMTP connections, use:
+`/healthz`
 
-```env
-EMAIL_PROVIDER=smtp
-SMTP_HOST=mail.spacemail.com
-SMTP_PORT=465
-SMTP_USER=support@quickdl.site
-SMTP_PASSWORD=YOUR_SPACEMAIL_MAILBOX_PASSWORD
-EMAIL_FROM=QuickDL <support@quickdl.site>
-```
+The Dockerfile listens on Render's `$PORT` and installs FFmpeg plus Deno.
 
-Spacemail officially documents `mail.spacemail.com:465` SSL and also supports port `587` STARTTLS.
+## Email
 
-## Other required environment variables
-See `.env.example` for Google, PayPal Live, credits, cookies and admin configuration.
+For Render Free, use Resend over HTTPS:
 
-Never commit:
-- `PAYPAL_CLIENT_SECRET`
-- `SMTP_PASSWORD`
-- `RESEND_API_KEY`
-- `ADMIN_PASSWORD`
-- `ADMIN_SESSION_SECRET`
+- `EMAIL_PROVIDER=resend`
+- `RESEND_API_KEY=...`
+- `RESEND_FROM=QuickDL <support@quickdl.site>`
+- `RESEND_REPLY_TO=support@quickdl.site`
 
-## Downloader limitations
-QuickDL handles public media only. It does not bypass private accounts, DRM, CAPTCHA, or authentication walls. Some platforms can change their anti-bot/extraction behavior, so no downloader can honestly guarantee every public URL forever. yt-dlp documents that some sources can require cookies, matching headers, or other platform-specific requirements. 
+The sender domain must be verified in Resend.
 
+## Important limitation
 
-## v28 deployment
-
-- `requirements.txt` uses the available stable yt-dlp line `>=2026.8.19,<2027`.
-- Docker installs Deno for yt-dlp EJS and removes the old self-link command that caused Render builds to fail.
-- Render health check: `/healthz`.
-- Account creation and Google login are open on the first v28 boot; after that, admin changes are preserved.
-- `/api/ready` checks database readiness without exposing provider/database details.
-- The browser sends the stored visitor ID as a fallback header while the server keeps the HTTP-only cookie authoritative.
+The downloader only handles public media. It does not bypass private accounts, authentication walls, DRM, CAPTCHAs, or other access controls. Social platforms can change their public pages or rate-limit automated requests, so source-specific availability can change independently of QuickDL's code.
