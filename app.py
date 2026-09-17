@@ -1068,7 +1068,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="30.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="31.0.0", lifespan=lifespan)
 
 def record_app_error(ref, request, exc, status=500):
     try:
