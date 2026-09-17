@@ -1092,12 +1092,28 @@ def sw(): return FileResponse(BASE / "sw.js", media_type="application/javascript
 def public_config():
     return {"announcement_enabled":setting_bool("announcement_enabled"),"announcement":setting_get("announcement"),"maintenance":setting_bool("maintenance"),"credits_enabled":True,"monthly_free":int(setting_get("monthly_free_credits") or MONTHLY_FREE_CREDITS),"video_cost":int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST),"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET and PAYPAL_MODE=="live"),"paypal_live_ready":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET and PAYPAL_MODE=="live"),"paypal_client_id":PAYPAL_CLIENT_ID if PAYPAL_MODE=="live" else "","currency":PAYPAL_CURRENCY,"google_login_enabled":setting_bool("google_login_enabled"),"google_client_id":GOOGLE_CLIENT_ID,"login_enabled":setting_bool("login_enabled"),"email_auth_configured":bool(SMTP_PASSWORD or RESEND_API_KEY),"ads_enabled":setting_bool("ads_enabled"),"ads_text":setting_get("ads_text"),"ads_url":setting_get("ads_url"),"ads_button_text":setting_get("ads_button_text")}
 
+@app.get("/healthz")
+def healthz():
+    return {"status":"ok","service":"quickdl","version":"28.0.0"}
+
 @app.get("/api/health")
 def health():
     db = Session()
     try:
         db.execute(select(Download.id).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "27.0.0", "worker": WORKER_HEARTBEAT}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "28.0.0", "worker": WORKER_HEARTBEAT}
+    except Exception:
+        raise HTTPException(503, "QuickDL is temporarily unavailable. Please try again shortly.")
+    finally: db.close()
+
+@app.get("/api/ready")
+def readiness():
+    db = Session()
+    try:
+        db.execute(text("SELECT 1"))
+        return {"ok": True, "service": "quickdl"}
+    except Exception:
+        raise HTTPException(503, "QuickDL is temporarily unavailable. Please try again shortly.")
     finally: db.close()
 
 class DownloadRequest(BaseModel):
@@ -1328,9 +1344,8 @@ def credits_health(request: Request, vexdou_visitor: str | None = Cookie(default
             "month": account.month_key,
         }
         db.commit()
-        out = JSONResponse(payload)
-        if not vexdou_visitor or request.headers.get("x-quickdl-visitor"):
-            _set_visitor_cookie(out, visitor)
+        out = JSONResponse(payload, headers={"Cache-Control":"no-store"})
+        _set_visitor_cookie(out, visitor)
         return out
     except Exception as exc:
         db.rollback()
@@ -1368,6 +1383,13 @@ class ResetPasswordRequest(BaseModel):
     email: str
     code: str
     password: str
+
+def _expired(value):
+    if not value:
+        return True
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value < datetime.now(timezone.utc)
 
 def normalize_email(value):
     email=(value or "").strip().lower()
@@ -1593,7 +1615,7 @@ def email_signup_verify(data: EmailCodeRequest, request: Request, vexdou_visitor
         account=db.scalar(select(CreditAccount).where(CreditAccount.email==email).with_for_update())
         if not account: raise HTTPException(404,"Signup session not found. Please request a new code.")
         if account.email_verified: raise HTTPException(409,"This email is already verified. Please log in.")
-        if not account.email_code_expires_at or account.email_code_expires_at<datetime.now(timezone.utc) or not hmac.compare_digest(account.email_code_hash or "",code_hash(code)): raise HTTPException(400,"The code is invalid or expired.")
+        if not account.email_code_expires_at or _expired(account.email_code_expires_at) or not hmac.compare_digest(account.email_code_hash or "",code_hash(code)): raise HTTPException(400,"The code is invalid or expired.")
         account.email_verified=True; account.email_code_hash=None; account.email_code_expires_at=None; account.updated_at=datetime.now(timezone.utc); db.commit()
         welcome_sent=False
         if not account.welcome_email_sent_at and (RESEND_API_KEY or SMTP_PASSWORD):
@@ -1648,7 +1670,7 @@ def reset_password(data: ResetPasswordRequest, request: Request):
     new_hash=password_hash(data.password); db=Session()
     try:
         account=db.scalar(select(CreditAccount).where(CreditAccount.email==email).with_for_update())
-        if not account or not account.reset_code_expires_at or account.reset_code_expires_at<datetime.now(timezone.utc) or not hmac.compare_digest(account.reset_code_hash or "",code_hash(code)): raise HTTPException(400,"The reset code is invalid or expired.")
+        if not account or not account.reset_code_expires_at or _expired(account.reset_code_expires_at) or not hmac.compare_digest(account.reset_code_hash or "",code_hash(code)): raise HTTPException(400,"The reset code is invalid or expired.")
         account.password_hash=new_hash; account.reset_code_hash=None; account.reset_code_expires_at=None; account.updated_at=datetime.now(timezone.utc); db.commit(); out=JSONResponse({"ok":True,**account_payload(account.visitor_id)}); _set_visitor_cookie(out,account.visitor_id); return out
     finally: db.close()
 
@@ -1936,8 +1958,8 @@ DEFAULT_SETTINGS = {
     "max_concurrent_jobs": os.getenv("MAX_CONCURRENT_JOBS", "2"),
     "monthly_free_credits": str(MONTHLY_FREE_CREDITS),
     "video_credit_cost": str(VIDEO_CREDIT_COST),
-    "google_login_enabled": "false",
-    "login_enabled": "false",
+    "google_login_enabled": "true",
+    "login_enabled": "true",
     "ads_enabled": "false",
     "ads_text": "",
     "ads_url": "",
@@ -1962,6 +1984,32 @@ def settings_all():
 
 def setting_bool(key):
     return setting_get(key).lower() in {"1", "true", "yes", "on"}
+
+def bootstrap_access_settings():
+    """Migrate the old closed-by-default access flags once on v28.
+
+    After this one-time migration, admin changes are respected normally.
+    """
+    db = Session()
+    try:
+        marker = db.get(AdminSetting, "v28_access_settings_migrated")
+        if marker is None:
+            for key in ("login_enabled", "google_login_enabled"):
+                row = db.get(AdminSetting, key)
+                if row is None:
+                    db.add(AdminSetting(key=key, value="true"))
+                elif str(row.value).strip().lower() in {"false", "0", "no", "off", ""}:
+                    row.value = "true"
+                    row.updated_at = datetime.now(timezone.utc)
+            db.add(AdminSetting(key="v28_access_settings_migrated", value="true"))
+            db.commit()
+    except Exception:
+        db.rollback()
+        log.exception("access settings bootstrap failed")
+    finally:
+        db.close()
+
+bootstrap_access_settings()
 
 def audit(action, detail=""):
     db = Session()
@@ -2296,6 +2344,8 @@ def admin_settings(data: AdminSettingUpdate, request: Request):
             if row: row.value=val; row.updated_at=datetime.now(timezone.utc)
             else: db.add(AdminSetting(key=key,value=val))
             changed.append(key)
+            if key in {"login_enabled", "google_login_enabled"} and db.get(AdminSetting, "v28_access_settings_migrated") is None:
+                db.add(AdminSetting(key="v28_access_settings_migrated", value="true"))
         db.commit(); audit("settings_updated", ", ".join(changed)); return {"ok":True,"settings":settings_all()}
     finally: db.close()
 

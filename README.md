@@ -56,3 +56,13 @@ Never commit:
 
 ## Downloader limitations
 QuickDL handles public media only. It does not bypass private accounts, DRM, CAPTCHA, or authentication walls. Some platforms can change their anti-bot/extraction behavior, so no downloader can honestly guarantee every public URL forever. yt-dlp documents that some sources can require cookies, matching headers, or other platform-specific requirements. 
+
+
+## v28 deployment
+
+- `requirements.txt` uses the available stable yt-dlp line `>=2026.8.19,<2027`.
+- Docker installs Deno for yt-dlp EJS and removes the old self-link command that caused Render builds to fail.
+- Render health check: `/healthz`.
+- Account creation and Google login are open on the first v28 boot; after that, admin changes are preserved.
+- `/api/ready` checks database readiness without exposing provider/database details.
+- The browser sends the stored visitor ID as a fallback header while the server keeps the HTTP-only cookie authoritative.
