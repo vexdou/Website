@@ -279,6 +279,9 @@ RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
 RESEND_FROM = os.getenv("RESEND_FROM", EMAIL_FROM).strip()
 RESEND_REPLY_TO = os.getenv("RESEND_REPLY_TO", "").strip()
 EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "auto").strip().lower()
+# If no email provider is configured, QuickDL can still create email/password accounts.
+# Verification remains enabled automatically whenever Resend/SMTP is configured.
+EMAIL_AUTH_REQUIRE_VERIFICATION = os.getenv("EMAIL_AUTH_REQUIRE_VERIFICATION", "false").lower() in {"1","true","yes","on"}
 AUTH_CODE_MINUTES = max(5, int(os.getenv("AUTH_CODE_MINUTES", "10")))
 PAYPAL_TOKEN_CACHE = {"token": None, "expires_at": 0}
 WORKER_HEARTBEAT = {"started_at": None, "last_loop": None, "last_job": None, "last_error": None, "jobs_completed": 0, "jobs_failed": 0}
@@ -1074,7 +1077,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="32.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="33.0.0", lifespan=lifespan)
 
 def record_app_error(ref, request, exc, status=500):
     try:
@@ -1148,7 +1151,7 @@ def healthz():
     try:
         db.execute(text("SELECT 1"))
         db.execute(select(Download.id).limit(1))
-        return {"status":"ok","service":"quickdl","version":"32.0.0","database":"ok","worker_started":bool(WORKER_HEARTBEAT.get("started_at"))}
+        return {"status":"ok","service":"quickdl","version":"33.0.0","database":"ok","worker_started":bool(WORKER_HEARTBEAT.get("started_at"))}
     except Exception as exc:
         log.exception("health check failed: %s", exc)
         raise HTTPException(503, "QuickDL is temporarily unavailable. Please try again shortly.") from exc
@@ -1162,7 +1165,7 @@ def health():
         db.execute(select(Download.id).limit(1))
         db.execute(select(CreditAccount.id).limit(1))
         db.execute(select(AdminSetting.key).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "30.0.0", "worker": WORKER_HEARTBEAT}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "33.0.0", "worker": WORKER_HEARTBEAT}
     except Exception:
         raise HTTPException(503, "QuickDL is temporarily unavailable. Please try again shortly.")
     finally: db.close()
@@ -1695,9 +1698,19 @@ def email_signup_request(data: EmailSignupRequest, request: Request, vexdou_visi
         if existing and existing.visitor_id!=visitor:
             target=existing
         else: target=account
-        code=make_code(); target.email=email; target.auth_name=(data.name or email.split("@")[0])[:200]; target.password_hash=password_hash(data.password); target.email_verified=False; target.email_code_hash=code_hash(code); target.email_code_expires_at=datetime.fromtimestamp(time.time()+AUTH_CODE_MINUTES*60,timezone.utc); target.updated_at=datetime.now(timezone.utc); db.commit()
-        send_auth_email(email,"Your QuickDL verification code","Verify your QuickDL account","Use the code below to verify your email address and finish creating your account.",code,"Email verification code")
-        out=JSONResponse({"ok":True,"message":"Verification code sent to your email."}); _set_visitor_cookie(out,target.visitor_id); return out
+        target.email=email; target.auth_name=(data.name or email.split("@")[0])[:200]; target.password_hash=password_hash(data.password); target.updated_at=datetime.now(timezone.utc)
+        provider_ready=bool(RESEND_API_KEY or SMTP_PASSWORD)
+        verification_required=bool(EMAIL_AUTH_REQUIRE_VERIFICATION or provider_ready)
+        if verification_required:
+            code=make_code(); target.email_verified=False; target.email_code_hash=code_hash(code); target.email_code_expires_at=datetime.fromtimestamp(time.time()+AUTH_CODE_MINUTES*60,timezone.utc); db.commit()
+            send_auth_email(email,"Your QuickDL verification code","Verify your QuickDL account","Use the code below to verify your email address and finish creating your account.",code,"Email verification code")
+            out=JSONResponse({"ok":True,"verification_required":True,"message":"Verification code sent to your email."})
+        else:
+            # A fresh installation with no mail provider must not make signup/login
+            # completely unusable. In this mode the account is immediately active.
+            target.email_verified=True; target.email_code_hash=None; target.email_code_expires_at=None; db.commit()
+            out=JSONResponse({"ok":True,"verification_required":False,"message":"Account created successfully. Email verification is not configured on this installation.",**account_payload(target.visitor_id)})
+        _set_visitor_cookie(out,target.visitor_id); return out
     finally: db.close()
 
 @app.post("/api/auth/signup/verify")
@@ -2151,7 +2164,7 @@ def admin_system(request: Request):
         for st in ("queued","downloading","completed","failed"):
             counts[st]=db.scalar(select(func.count()).select_from(Download).where(Download.status==st)) or 0
         return {
-            "version":"32.0.0",
+            "version":"33.0.0",
             "python":os.sys.version.split()[0],
             "yt_dlp":getattr(yt_dlp,"version",{}).get("version") if isinstance(getattr(yt_dlp,"version",None),dict) else str(getattr(yt_dlp,"version","unknown")),
             "ffmpeg":shutil.which("ffmpeg") or "missing",
