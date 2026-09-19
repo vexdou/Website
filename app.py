@@ -310,7 +310,13 @@ def ensure_credit_account(db, visitor_id):
     if not visitor_id or not re.fullmatch(r"[a-f0-9]{32}", str(visitor_id)):
         raise ValueError("invalid visitor_id")
     month = current_month_key()
-    monthly_free = max(0, int(setting_get("monthly_free_credits", db) or MONTHLY_FREE_CREDITS))
+    # Account creation remains usable even if an old deployment has a partially
+    # migrated admin_settings table. Fall back to the environment default.
+    try:
+        monthly_free = max(0, int(setting_get("monthly_free_credits", db) or MONTHLY_FREE_CREDITS))
+    except Exception:
+        log.exception("monthly credit setting read failed; using default")
+        monthly_free = max(0, MONTHLY_FREE_CREDITS)
     now = datetime.now(timezone.utc)
 
     account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
@@ -437,8 +443,16 @@ def account_payload(visitor_id):
         db = Session()
         try:
             account = ensure_credit_account(db, visitor_id)
-            monthly_free = max(0, int(setting_get("monthly_free_credits", db) or MONTHLY_FREE_CREDITS))
-            video_cost = max(0, int(setting_get("video_credit_cost", db) or VIDEO_CREDIT_COST))
+            try:
+                monthly_free = max(0, int(setting_get("monthly_free_credits", db) or MONTHLY_FREE_CREDITS))
+            except Exception:
+                log.exception("account monthly setting read failed; using default")
+                monthly_free = max(0, MONTHLY_FREE_CREDITS)
+            try:
+                video_cost = max(0, int(setting_get("video_credit_cost", db) or VIDEO_CREDIT_COST))
+            except Exception:
+                log.exception("account video-cost setting read failed; using default")
+                video_cost = max(0, VIDEO_CREDIT_COST)
             db.commit()
             return {"visitor_id": visitor_id, "user_code": account.user_code, "free_credits": int(account.free_credits or 0), "purchased_credits": int(account.purchased_credits or 0), "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": monthly_free, "video_cost": video_cost, "month": account.month_key, "google": bool(account.google_sub), "google_email": account.google_email, "google_name": account.google_name, "google_picture": account.google_picture, "email": account.email, "email_verified": bool(getattr(account, "email_verified", False)), "auth_name": account.auth_name, "authenticated": bool(account.google_sub or account.email_verified), "display_name": account.google_name or account.auth_name or account.google_email or account.email, "welcome_email_sent": bool(getattr(account, "welcome_email_sent_at", None) or getattr(account, "google_welcome_sent_at", None))}
         except Exception as exc:
@@ -1077,7 +1091,7 @@ async def lifespan(app):
     threading.Thread(target=worker_loop, daemon=True, name="quickdl-worker").start()
     yield
 
-app = FastAPI(title="QuickDL", version="33.0.0", lifespan=lifespan)
+app = FastAPI(title="QuickDL", version="34.0.0", lifespan=lifespan)
 
 def record_app_error(ref, request, exc, status=500):
     try:
@@ -1151,7 +1165,7 @@ def healthz():
     try:
         db.execute(text("SELECT 1"))
         db.execute(select(Download.id).limit(1))
-        return {"status":"ok","service":"quickdl","version":"33.0.0","database":"ok","worker_started":bool(WORKER_HEARTBEAT.get("started_at"))}
+        return {"status":"ok","service":"quickdl","version":"34.0.0","database":"ok","worker_started":bool(WORKER_HEARTBEAT.get("started_at"))}
     except Exception as exc:
         log.exception("health check failed: %s", exc)
         raise HTTPException(503, "QuickDL is temporarily unavailable. Please try again shortly.") from exc
@@ -1161,24 +1175,18 @@ def healthz():
 @app.get("/api/health")
 def health():
     db = Session()
+    checks = {"database": False, "downloads_table": False, "credit_accounts_table": False, "admin_settings_table": False}
     try:
-        db.execute(select(Download.id).limit(1))
-        db.execute(select(CreditAccount.id).limit(1))
-        db.execute(select(AdminSetting.key).limit(1))
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "33.0.0", "worker": WORKER_HEARTBEAT}
-    except Exception:
-        raise HTTPException(503, "QuickDL is temporarily unavailable. Please try again shortly.")
-    finally: db.close()
-
-@app.get("/api/ready")
-def readiness():
-    db = Session()
-    try:
-        db.execute(text("SELECT 1"))
-        return {"ok": True, "service": "quickdl"}
-    except Exception:
-        raise HTTPException(503, "QuickDL is temporarily unavailable. Please try again shortly.")
-    finally: db.close()
+        db.execute(text("SELECT 1")); checks["database"] = True
+        db.execute(select(Download.id).limit(1)); checks["downloads_table"] = True
+        db.execute(select(CreditAccount.id).limit(1)); checks["credit_accounts_table"] = True
+        db.execute(select(AdminSetting.key).limit(1)); checks["admin_settings_table"] = True
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "34.0.0", "checks": checks, "worker": WORKER_HEARTBEAT}
+    except Exception as exc:
+        log.exception("health check failed: %s", exc)
+        raise HTTPException(503, {"code":"HEALTH_CHECK_FAILED","message":"QuickDL is temporarily unavailable. Please try again shortly.","checks":checks}) from exc
+    finally:
+        db.close()
 
 class DownloadRequest(BaseModel):
     url: HttpUrl
