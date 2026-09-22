@@ -37,3 +37,10 @@ Third-party media providers can change their delivery systems. QuickDL supports 
 Admin can enable **Free Mode / Guest Downloads** from `/admin18` → Settings. When enabled, QuickDL hides account/credit/payment UI, does not load Google/PayPal SDKs, bypasses credit charging, and allows guest downloads.
 
 Support: WhatsApp **+252 90 7868526** — https://wa.me/252907868526
+
+
+## Admin panel
+- Open `https://YOUR-DOMAIN/admin` (also available at `/admin18`).
+- Set `ADMIN_PASSWORD` and `ADMIN_SESSION_SECRET` in Render environment variables.
+- The Admin → Control page provides Free Mode, Login/Sign up, Downloads and Maintenance controls.
+- Free Mode ON disables public accounts/payments/credit charging while keeping downloads available and the admin panel accessible.

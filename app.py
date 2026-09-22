@@ -2256,6 +2256,8 @@ def public_email_health():
     except Exception:
         return {"ok":False,"message":"Email service is temporarily unavailable."}
 
+@app.get("/admin", response_class=HTMLResponse)
+@app.get("/admin/", response_class=HTMLResponse)
 @app.get("/admin18", response_class=HTMLResponse)
 def admin_page(request: Request):
     if not admin_ok(request): return admin_file("admin_login.html")
