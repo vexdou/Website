@@ -1155,8 +1155,7 @@ def sw(): return FileResponse(BASE / "sw.js", media_type="application/javascript
 def public_config():
     db = Session()
     try:
-        fm=free_mode_enabled(db)
-        return {"announcement_enabled":setting_bool("announcement_enabled", db),"announcement":setting_get("announcement", db),"maintenance":setting_bool("maintenance", db),"free_mode":fm,"credits_enabled":False if fm else setting_bool("credits_enabled", db),"monthly_free":0 if fm else int(setting_get("monthly_free_credits", db) or MONTHLY_FREE_CREDITS),"video_cost":0 if fm else int(setting_get("video_credit_cost", db) or VIDEO_CREDIT_COST),"paypal_enabled":False if fm else bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET and PAYPAL_MODE=="live"),"paypal_live_ready":False if fm else bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET and PAYPAL_MODE=="live"),"paypal_client_id":"" if fm else (PAYPAL_CLIENT_ID if PAYPAL_MODE=="live" else ""),"currency":PAYPAL_CURRENCY,"google_login_enabled":False if fm else setting_bool("google_login_enabled", db),"google_client_id":"" if fm else GOOGLE_CLIENT_ID,"login_enabled":False if fm else setting_bool("login_enabled", db),"email_auth_configured":False if fm else bool(SMTP_PASSWORD or RESEND_API_KEY),"ads_enabled":setting_bool("ads_enabled", db),"ads_text":setting_get("ads_text", db),"ads_url":setting_get("ads_url", db),"ads_button_text":setting_get("ads_button_text", db)}
+        return {"free_mode":setting_bool("free_mode", db),"announcement_enabled":setting_bool("announcement_enabled", db),"announcement":setting_get("announcement", db),"maintenance":setting_bool("maintenance", db),"credits_enabled":setting_bool("credits_enabled", db),"monthly_free":int(setting_get("monthly_free_credits", db) or MONTHLY_FREE_CREDITS),"video_cost":int(setting_get("video_credit_cost", db) or VIDEO_CREDIT_COST),"paypal_enabled":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET and PAYPAL_MODE=="live"),"paypal_live_ready":bool(PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET and PAYPAL_MODE=="live"),"paypal_client_id":PAYPAL_CLIENT_ID if PAYPAL_MODE=="live" else "","currency":PAYPAL_CURRENCY,"google_login_enabled":setting_bool("google_login_enabled", db),"google_client_id":GOOGLE_CLIENT_ID,"login_enabled":setting_bool("login_enabled", db),"email_auth_configured":bool(SMTP_PASSWORD or RESEND_API_KEY),"ads_enabled":setting_bool("ads_enabled", db),"ads_text":setting_get("ads_text", db),"ads_url":setting_get("ads_url", db),"ads_button_text":setting_get("ads_button_text", db),"whatsapp_support_enabled":setting_bool("whatsapp_support_enabled", db),"whatsapp_support_phone":setting_get("whatsapp_support_phone", db),"owner_name":setting_get("owner_name", db),"owner_title":setting_get("owner_title", db),"about_url":"/about","privacy_url":"/privacy"}
     finally:
         db.close()
 
@@ -1182,7 +1181,7 @@ def health():
         db.execute(select(Download.id).limit(1)); checks["downloads_table"] = True
         db.execute(select(CreditAccount.id).limit(1)); checks["credit_accounts_table"] = True
         db.execute(select(AdminSetting.key).limit(1)); checks["admin_settings_table"] = True
-        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "35.0.0", "checks": checks, "worker": WORKER_HEARTBEAT}
+        return {"ok": True, "service": "quickdl", "storage": "local-ephemeral", "version": "36.0.0", "checks": checks, "worker": WORKER_HEARTBEAT}
     except Exception as exc:
         log.exception("health check failed: %s", exc)
         raise HTTPException(503, {"code":"HEALTH_CHECK_FAILED","message":"QuickDL is temporarily unavailable. Please try again shortly.","checks":checks}) from exc
@@ -1213,10 +1212,7 @@ def reserve_download_job(visitor_id, job_id, url, kind, cost):
     for attempt in range(3):
         db = Session()
         try:
-            anonymous_free = free_mode_enabled(db)
-            account = None if anonymous_free else ensure_credit_account(db, visitor_id)
-            if anonymous_free:
-                cost = 0
+            account = ensure_credit_account(db, visitor_id)
             if cost > 0 and not bool(getattr(account, "unlimited", False)):
                 balance = credit_balance(account)
                 if balance < cost:
@@ -1232,7 +1228,7 @@ def reserve_download_job(visitor_id, job_id, url, kind, cost):
                 db.add(CreditTransaction(visitor_id=visitor_id, tx_type="download", credits=0, status="completed", note=f"Unlimited download {job_id}"))
             db.add(Download(job_id=job_id, visitor_id=visitor_id, url=url, title="Preparing...", status="queued", kind=kind))
             db.commit()
-            return True, None if anonymous_free else credit_balance(account)
+            return True, credit_balance(account)
         except IntegrityError as exc:
             last_exc = exc
             db.rollback()
@@ -1262,7 +1258,10 @@ def reserve_download_job(visitor_id, job_id, url, kind, cost):
 def create_download(req: DownloadRequest, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
     if setting_bool("maintenance"):
         raise HTTPException(503, setting_get("maintenance_message"))
-    if not setting_bool("downloads_enabled"):
+    # Free Mode is the public emergency/simple mode: credits, payment, login and
+    # platform toggles are bypassed. The explicit maintenance switch still remains
+    # the administrator's master kill switch.
+    if not free_mode_enabled() and not setting_bool("downloads_enabled"):
         raise HTTPException(503, "Downloads are temporarily disabled by QuickDL.")
     url, kind = str(req.url).strip(), req.kind.lower().strip()
     p = platform(url)
@@ -1270,7 +1269,7 @@ def create_download(req: DownloadRequest, request: Request, vexdou_visitor: str 
     # public sources; set STRICT_PLATFORM_TOGGLES=true if the admin switches should
     # actively block a platform. This prevents stale DB flags from making every link
     # look "temporarily unavailable" after a deployment.
-    if STRICT_PLATFORM_TOGGLES and not setting_bool(f"{p}_enabled"):
+    if STRICT_PLATFORM_TOGGLES and not free_mode_enabled() and not setting_bool(f"{p}_enabled"):
         raise HTTPException(503, f"{p.title()} downloads are temporarily unavailable.")
     if kind not in {"video", "audio"}: raise HTTPException(400, "Invalid download type")
     if not allowed(url): raise HTTPException(400, "Please enter a valid public HTTP/HTTPS URL")
@@ -1279,16 +1278,23 @@ def create_download(req: DownloadRequest, request: Request, vexdou_visitor: str 
     # and does not consume another video credit.
     cost = 0 if free_mode_enabled() else (int(setting_get("video_credit_cost") or VIDEO_CREDIT_COST) if kind == "video" else 0)
     try:
-        ok, remaining = reserve_download_job(visitor, job, url, kind, cost)
+        if free_mode_enabled():
+            db = Session()
+            try:
+                db.add(Download(job_id=job, visitor_id=visitor, url=url, title="Preparing...", status="queued", kind=kind))
+                db.commit()
+                ok, remaining = True, None
+            finally:
+                db.close()
+        else:
+            ok, remaining = reserve_download_job(visitor, job, url, kind, cost)
     except Exception as exc:
         diagnostic_id = uuid.uuid4().hex[:12]
         log.exception("atomic credit/job reservation failed id=%s visitor=%s", diagnostic_id, visitor)
         raise HTTPException(503, "Download service is temporarily busy. Your credits were not charged. Please try again.") from exc
     if not ok:
-        if not free_mode_enabled():
-            queue_user_email(visitor, "QuickDL — you are out of credits", "Your free credits are finished", f"Your QuickDL balance is {remaining or 0} credits. A video download requires {cost} credits. You can add credits from the Credits section.", "CREDIT BALANCE", "#f59e0b")
-            raise HTTPException(402, detail={"code":"OUT_OF_CREDITS","message":"You are out of credits. Please add credits to continue.","credits":remaining or 0,"cost":cost})
-        raise HTTPException(503, "Download service is temporarily busy. Please try again.")
+        queue_user_email(visitor, "QuickDL — you are out of credits", "Your free credits are finished", f"Your QuickDL balance is {remaining or 0} credits. A video download requires {cost} credits. You can add credits from the Credits section.", "CREDIT BALANCE", "#f59e0b")
+        raise HTTPException(402, detail={"code":"OUT_OF_CREDITS","message":"You are out of credits. Please add credits to continue.","credits":remaining or 0,"cost":cost})
     out = JSONResponse({"ok":True, "job_id":job, "status":"queued", "platform":platform(url), "kind":kind})
     _set_visitor_cookie(out, visitor)
     return out
@@ -1391,19 +1397,20 @@ def public_diagnostics():
         db.execute(select(Download.id).limit(1)); checks["downloads"] = True
         db.execute(select(CreditAccount.id).limit(1)); checks["credits"] = True
         db.execute(select(AdminSetting.key).limit(1)); checks["settings"] = True
-        return {"ok": all(checks.values()), "version": "35.0.0", "checks": checks, "worker_started": bool(WORKER_HEARTBEAT.get("started_at")), "worker_last_error": WORKER_HEARTBEAT.get("last_error")}
+        return {"ok": all(checks.values()), "version": "36.0.0", "checks": checks, "worker_started": bool(WORKER_HEARTBEAT.get("started_at")), "worker_last_error": WORKER_HEARTBEAT.get("last_error")}
     except Exception as exc:
         log.exception("public diagnostics failed")
-        return JSONResponse(status_code=503, content={"ok": False, "version": "35.0.0", "checks": checks, "worker_started": bool(WORKER_HEARTBEAT.get("started_at")), "error": "database_or_schema_unavailable"})
+        return JSONResponse(status_code=503, content={"ok": False, "version": "36.0.0", "checks": checks, "worker_started": bool(WORKER_HEARTBEAT.get("started_at")), "error": "database_or_schema_unavailable"})
     finally:
         db.close()
 
 @app.get("/api/account")
 def api_account(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
-    if free_mode_enabled():
-        out = JSONResponse({"ok":True,"free_mode":True,"authenticated":False,"credits":None,"video_cost":0}, headers={"Cache-Control":"no-store"})
-        return out
     visitor = _visitor_from(request, vexdou_visitor)
+    if free_mode_enabled():
+        out = JSONResponse({"ok":True,"visitor_id":visitor,"user_code":None,"free_credits":0,"purchased_credits":0,"credits":None,"unlimited":True,"monthly_free":0,"video_cost":0,"google":False,"google_email":None,"google_name":None,"google_picture":None,"email":None,"email_verified":False,"auth_name":None,"authenticated":False,"display_name":"Guest","free_mode":True}, headers={"Cache-Control":"no-store"})
+        _set_visitor_cookie(out, visitor)
+        return out
     try:
         data = account_payload(visitor)
     except Exception as exc:
@@ -1419,8 +1426,7 @@ def api_account(request: Request, vexdou_visitor: str | None = Cookie(default=No
 
 @app.get("/api/credits/packages")
 def credit_packages():
-    if free_mode_enabled():
-        return {"currency":PAYPAL_CURRENCY,"video_cost":0,"monthly_free":0,"packages":[],"free_mode":True}
+    if free_mode_enabled(): return {"currency":PAYPAL_CURRENCY,"video_cost":0,"monthly_free":0,"packages":[],"free_mode":True}
     return {"currency":PAYPAL_CURRENCY,"video_cost":VIDEO_CREDIT_COST,"monthly_free":MONTHLY_FREE_CREDITS,"packages":[{"id":k,**v} for k,v in CREDIT_PACKAGES.items()]}
 
 @app.get("/api/credits")
@@ -1428,8 +1434,7 @@ def credits_compat(request: Request, vexdou_visitor: str | None = Cookie(default
     """Backward-compatible credits endpoint for older static clients.
     The canonical frontend uses /api/account + /api/credits/packages.
     """
-    if free_mode_enabled():
-        return {"free_mode":True,"balance":None,"credits":None,"cost":0,"packages":[]}
+    if free_mode_enabled(): return {"balance":None,"cost":0,"packages":[],"unlimited":True,"free_mode":True}
     visitor = _visitor_from(request, vexdou_visitor)
     payload = account_payload(visitor)
     return {**payload, "balance": payload["credits"], "cost": payload["video_cost"],
@@ -1437,6 +1442,7 @@ def credits_compat(request: Request, vexdou_visitor: str | None = Cookie(default
 
 @app.post("/api/credits/checkout")
 def credits_checkout_compat(data: PackageRequest, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
+    if free_mode_enabled(): raise HTTPException(403,"Payments are disabled while QuickDL Free Mode is active.")
     """Compatibility checkout route; creates a PayPal order and returns its approval URL."""
     visitor = _visitor_from(request, vexdou_visitor)
     package = CREDIT_PACKAGES.get(data.package_id)
@@ -1460,6 +1466,7 @@ def credits_checkout_compat(data: PackageRequest, request: Request, vexdou_visit
 
 @app.get("/api/credits/transactions")
 def credit_transactions(request: Request, vexdou_visitor: str | None = Cookie(default=None), limit: int = 50):
+    if free_mode_enabled(): raise HTTPException(403,"Credits and payments are disabled while QuickDL Free Mode is active.")
     visitor = _visitor_from(request, vexdou_visitor)
     if not visitor: return {"items":[]}
     db=Session()
@@ -1470,6 +1477,7 @@ def credit_transactions(request: Request, vexdou_visitor: str | None = Cookie(de
 
 @app.get("/api/credits/health")
 def credits_health(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
+    if free_mode_enabled(): raise HTTPException(403,"Credits and payments are disabled while QuickDL Free Mode is active.")
     """Safe diagnostic endpoint for the credit initialization path."""
     visitor = _visitor_from(request, vexdou_visitor)
     db = Session()
@@ -1725,15 +1733,15 @@ def queue_user_email(visitor_id, subject, title, intro, badge="QUICKDL NOTIFICAT
     threading.Thread(target=runner, daemon=True).start()
 
 
-def login_enabled(): return setting_bool("login_enabled") and not free_mode_enabled()
+def free_mode_enabled(db=None):
+    return setting_bool("free_mode", db)
 
-def auth_closed_in_free_mode():
-    if free_mode_enabled():
-        raise HTTPException(403, "Account sign-in and sign-up are disabled while Free Mode is enabled.")
+def login_enabled():
+    return setting_bool("login_enabled") and not free_mode_enabled()
 
 @app.post("/api/auth/signup/request")
 def email_signup_request(data: EmailSignupRequest, request: Request, vexdou_visitor: str | None=Cookie(default=None)):
-    auth_closed_in_free_mode()
+    if free_mode_enabled(): raise HTTPException(403,"Accounts are disabled while QuickDL Free Mode is active.")
     if not login_enabled(): raise HTTPException(403,"Login is currently closed for new users.")
     email=normalize_email(data.email); visitor=_visitor_from(request,vexdou_visitor)
     if len(data.password)<8: raise HTTPException(400,"Password must be at least 8 characters.")
@@ -1762,7 +1770,7 @@ def email_signup_request(data: EmailSignupRequest, request: Request, vexdou_visi
 
 @app.post("/api/auth/signup/verify")
 def email_signup_verify(data: EmailCodeRequest, request: Request, vexdou_visitor: str | None=Cookie(default=None)):
-    auth_closed_in_free_mode()
+    if free_mode_enabled(): raise HTTPException(403,"Accounts are disabled while QuickDL Free Mode is active.")
     email=normalize_email(data.email); code=(data.code or "").strip()
     if not re.fullmatch(r"\d{6}",code): raise HTTPException(400,"Enter the 6-digit verification code.")
     db=Session()
@@ -1790,7 +1798,7 @@ def email_signup_verify(data: EmailCodeRequest, request: Request, vexdou_visitor
 
 @app.post("/api/auth/login")
 def email_login(data: EmailLoginRequest, request: Request, vexdou_visitor: str | None=Cookie(default=None)):
-    auth_closed_in_free_mode()
+    if free_mode_enabled(): raise HTTPException(403,"Accounts are disabled while QuickDL Free Mode is active.")
     email=normalize_email(data.email); db=Session()
     try:
         account=db.scalar(select(CreditAccount).where(CreditAccount.email==email).with_for_update())
@@ -1800,7 +1808,6 @@ def email_login(data: EmailLoginRequest, request: Request, vexdou_visitor: str |
 
 @app.post("/api/auth/logout")
 def auth_logout(request: Request):
-    auth_closed_in_free_mode()
     """End the browser identity session. The account remains safely stored in DB."""
     out = JSONResponse({"ok": True, "signed_out": True})
     out.delete_cookie("vexdou_visitor", path="/")
@@ -1811,7 +1818,7 @@ def auth_logout(request: Request):
 
 @app.post("/api/auth/forgot")
 def forgot_password(data: ForgotPasswordRequest):
-    auth_closed_in_free_mode()
+    if free_mode_enabled(): raise HTTPException(403,"Accounts are disabled while QuickDL Free Mode is active.")
     email=normalize_email(data.email); db=Session()
     try:
         account=db.scalar(select(CreditAccount).where(CreditAccount.email==email).with_for_update())
@@ -1823,7 +1830,7 @@ def forgot_password(data: ForgotPasswordRequest):
 
 @app.post("/api/auth/reset")
 def reset_password(data: ResetPasswordRequest, request: Request):
-    auth_closed_in_free_mode()
+    if free_mode_enabled(): raise HTTPException(403,"Accounts are disabled while QuickDL Free Mode is active.")
     email=normalize_email(data.email); code=(data.code or "").strip()
     if not re.fullmatch(r"\d{6}",code): raise HTTPException(400,"Enter the 6-digit reset code.")
     new_hash=password_hash(data.password); db=Session()
@@ -1838,7 +1845,7 @@ class GoogleLoginRequest(BaseModel):
 
 @app.post("/api/auth/google")
 def google_login(data: GoogleLoginRequest, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
-    auth_closed_in_free_mode()
+    if free_mode_enabled(): raise HTTPException(403,"Accounts are disabled while QuickDL Free Mode is active.")
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(503, "Google Login is not configured.")
     visitor = _visitor_from(request, vexdou_visitor)
@@ -1933,8 +1940,6 @@ def google_login(data: GoogleLoginRequest, request: Request, vexdou_visitor: str
 @app.get("/paypal-api/health")
 def paypal_health():
     """Non-secret PayPal connectivity check for deployment diagnostics."""
-    if free_mode_enabled():
-        return {"ok":False,"configured":False,"disabled":True,"message":"Payments are disabled while Free Mode is enabled."}
     if not PAYPAL_CLIENT_ID or not PAYPAL_CLIENT_SECRET:
         return {"ok": False, "configured": False, "mode": PAYPAL_MODE, "message": "Missing PayPal credentials."}
     try:
@@ -1946,7 +1951,7 @@ def paypal_health():
 
 @app.post("/paypal-api/checkout/orders/create")
 def paypal_create_order(data: PackageRequest, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
-    if free_mode_enabled(): raise HTTPException(403, "Payments are disabled while Free Mode is enabled.")
+    if free_mode_enabled(): raise HTTPException(403,"Payments are disabled while QuickDL Free Mode is active.")
     vexdou_visitor = _visitor_from(request, vexdou_visitor)
     package = CREDIT_PACKAGES.get(data.package_id)
     if not package: raise HTTPException(400,"Invalid credit package.")
@@ -1964,7 +1969,7 @@ def paypal_create_order(data: PackageRequest, request: Request, vexdou_visitor: 
 
 @app.post("/paypal-api/checkout/orders/{order_id}/capture")
 def paypal_capture_order(order_id: str, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
-    if free_mode_enabled(): raise HTTPException(403, "Payments are disabled while Free Mode is enabled.")
+    if free_mode_enabled(): raise HTTPException(403,"Payments are disabled while QuickDL Free Mode is active.")
     vexdou_visitor = _visitor_from(request, vexdou_visitor)
     db=Session()
     try:
@@ -2049,6 +2054,10 @@ class ContactRequest(BaseModel):
     email: str = ""
     message: str
 
+@app.get("/about", response_class=HTMLResponse)
+def about_page():
+    return FileResponse(BASE / "templates" / "owner.html")
+
 @app.get("/privacy", response_class=HTMLResponse)
 def privacy_page():
     return FileResponse(BASE / "templates" / "privacy.html")
@@ -2125,11 +2134,15 @@ DEFAULT_SETTINGS = {
     "credits_enabled": "true",
     "google_login_enabled": "true",
     "login_enabled": "true",
-    "free_mode": "false",
     "ads_enabled": "false",
     "ads_text": "",
     "ads_url": "",
     "ads_button_text": "Learn more",
+    "free_mode": "true",
+    "whatsapp_support_enabled": "true",
+    "whatsapp_support_phone": "+252907868526",
+    "owner_name": "Mohamet Abdirahman Osman Ahmet",
+    "owner_title": "CEO & Owner of QuickDL",
 }
 
 def setting_get(key, db=None):
@@ -2153,10 +2166,6 @@ def settings_all():
 
 def setting_bool(key, db=None):
     return setting_get(key, db).lower() in {"1", "true", "yes", "on"}
-
-def free_mode_enabled(db=None):
-    """When enabled, QuickDL is anonymous/free: no login, credits or payments."""
-    return setting_bool("free_mode", db)
 
 def bootstrap_access_settings():
     """Migrate the old closed-by-default access flags once on v28.
@@ -2226,7 +2235,7 @@ def admin_system(request: Request):
         for st in ("queued","downloading","completed","failed"):
             counts[st]=db.scalar(select(func.count()).select_from(Download).where(Download.status==st)) or 0
         return {
-            "version":"33.0.0",
+            "version":"36.0.0",
             "python":os.sys.version.split()[0],
             "yt_dlp":getattr(yt_dlp,"version",{}).get("version") if isinstance(getattr(yt_dlp,"version",None),dict) else str(getattr(yt_dlp,"version","unknown")),
             "ffmpeg":shutil.which("ffmpeg") or "missing",
@@ -2258,6 +2267,7 @@ def public_email_health():
     except Exception:
         return {"ok":False,"message":"Email service is temporarily unavailable."}
 
+@app.get("/admin", response_class=HTMLResponse)
 @app.get("/admin18", response_class=HTMLResponse)
 def admin_page(request: Request):
     if not admin_ok(request): return admin_file("admin_login.html")
@@ -2318,7 +2328,7 @@ def admin_overview(request: Request):
             status[r.status] = status.get(r.status, 0) + 1
             p = platform(r.url); plats[p] = plats.get(p, 0) + 1
         users = len({r.visitor_id for r in rows})
-        return {"version":"29.0.0-admin", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
+        return {"version":"36.0.0-admin", "users":users, "downloads":len(rows), "today":len(today), "week":len(week), "completed":status.get("completed",0), "failed":status.get("failed",0), "queued":status.get("queued",0), "downloading":status.get("downloading",0), "platforms":plats, "settings":settings_all(), "worker":"running"}
     finally: db.close()
 
 @app.get("/api/admin/users")
@@ -2540,11 +2550,6 @@ def admin_settings(data: AdminSettingUpdate, request: Request):
             if row: row.value=val; row.updated_at=datetime.now(timezone.utc)
             else: db.add(AdminSetting(key=key,value=val))
             changed.append(key)
-            if key == "free_mode" and str(val).lower() in {"true","1","yes","on"}:
-                for forced_key in ("login_enabled", "google_login_enabled"):
-                    forced=db.get(AdminSetting, forced_key)
-                    if forced: forced.value="false"; forced.updated_at=datetime.now(timezone.utc)
-                    else: db.add(AdminSetting(key=forced_key,value="false"))
             if key in {"login_enabled", "google_login_enabled"} and db.get(AdminSetting, "v28_access_settings_migrated") is None:
                 db.add(AdminSetting(key="v28_access_settings_migrated", value="true"))
         db.commit(); audit("settings_updated", ", ".join(changed)); return {"ok":True,"settings":settings_all()}
