@@ -31,3 +31,9 @@ QuickDL is a FastAPI + PostgreSQL media downloader with a credit system, email/p
 ## Important
 
 Third-party media providers can change their delivery systems. QuickDL supports public media only and does not bypass private access, DRM or CAPTCHA protections.
+
+## v35 Free Mode
+
+Admin can enable **Free Mode / Guest Downloads** from `/admin18` → Settings. When enabled, QuickDL hides account/credit/payment UI, does not load Google/PayPal SDKs, bypasses credit charging, and allows guest downloads.
+
+Support: WhatsApp **+252 90 7868526** — https://wa.me/252907868526
