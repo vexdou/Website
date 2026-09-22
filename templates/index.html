@@ -1,122 +1,214 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#070912">
-<meta name="color-scheme" content="dark light">
-<meta name="description" content="QuickDL — fast media downloads with a simple monthly credit system.">
-<link rel="manifest" href="/manifest.json"><link rel="icon" href="/static/icon-192.png">
-<title>QuickDL — Media, simplified</title>
-<style>
-:root{--bg:#070912;--surface:#0d111c;--surface2:#121827;--surface3:#182034;--line:#242d41;--text:#f8faff;--muted:#929cb0;--accent:#8b7cff;--accent2:#c084fc;--good:#28d49a;--warn:#f4b740;--bad:#ff647c;--shadow:0 28px 90px rgba(0,0,0,.42);--radius:24px}
-:root.light{--bg:#f5f7fc;--surface:#fff;--surface2:#f2f5fa;--surface3:#e8edf6;--line:#dce3ef;--text:#101522;--muted:#68758a;--shadow:0 25px 75px rgba(38,48,75,.13)}
-*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;background:radial-gradient(900px 500px at 50% -160px,rgba(139,124,255,.28),transparent 70%),var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}button,input{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:none}.hidden{display:none!important}.wrap{width:min(1180px,calc(100% - 30px));margin:auto}
-.header{position:sticky;top:0;z-index:80;border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(22px)}.head{height:72px;display:flex;align-items:center;gap:18px}.brand{font-size:25px;font-weight:950;letter-spacing:-1.6px}.brand span{color:var(--accent)}.nav{display:flex;gap:4px}.nav button,.iconbtn{border:1px solid transparent;background:transparent;color:var(--muted);border-radius:13px;padding:9px 12px;font-size:12px;font-weight:850}.nav button:hover,.nav button.active{background:var(--surface2);border-color:var(--line);color:var(--text)}.headright{margin-left:auto;display:flex;align-items:center;gap:8px}.creditpill{border:1px solid rgba(139,124,255,.4);background:linear-gradient(135deg,rgba(139,124,255,.16),rgba(192,132,252,.08));padding:9px 13px;border-radius:999px;font-size:11px;font-weight:900}.creditpill b{font-size:13px;color:#cfc9ff}.accountchip,.theme{border:1px solid var(--line);background:var(--surface);color:var(--text);border-radius:999px;padding:8px 12px;font-size:11px;font-weight:900}.theme{width:39px;height:39px;border-radius:13px;padding:0}.avatar{width:26px;height:26px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:5px}.menu{display:none}
-main{padding:46px 0 90px}.view{display:none}.view.active{display:block}.hero{text-align:center;max-width:930px;margin:0 auto}.badge{display:inline-flex;align-items:center;gap:7px;padding:8px 12px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.035);font-size:11px;font-weight:900;color:#c9c5ff;box-shadow:0 8px 35px rgba(0,0,0,.12)}.dot{width:7px;height:7px;border-radius:50%;background:var(--good);box-shadow:0 0 0 5px rgba(40,212,154,.1)}h1{font-size:clamp(43px,7vw,78px);line-height:.98;letter-spacing:-4px;margin:20px 0 18px;font-weight:950}.gradient{background:linear-gradient(110deg,var(--text),#aaa0ff 52%,#e0b8ff);-webkit-background-clip:text;background-clip:text;color:transparent}.hero p{max-width:700px;margin:0 auto;color:var(--muted);font-size:16px;line-height:1.7}.downbox{margin:34px auto 0;padding:9px;border:1px solid var(--line);border-radius:22px;background:linear-gradient(145deg,rgba(255,255,255,.055),rgba(255,255,255,.015));box-shadow:var(--shadow);display:flex;gap:8px;max-width:850px}.url{min-width:0;flex:1;border:0;outline:0;background:transparent;color:var(--text);padding:16px 14px;font-size:15px}.url::placeholder{color:#6f798d}.paste{border:1px solid var(--line);background:var(--surface2);color:var(--text);border-radius:15px;padding:0 14px;font-weight:850;font-size:12px}.download{border:0;color:#fff;border-radius:15px;padding:0 23px;font-weight:950;background:linear-gradient(135deg,#7c6cff,#a855f7);box-shadow:0 10px 28px rgba(124,108,255,.28)}.download:disabled{opacity:.5;cursor:not-allowed}.typebar{display:flex;justify-content:center;gap:7px;margin-top:13px}.type{border:1px solid var(--line);background:var(--surface);color:var(--muted);border-radius:999px;padding:8px 12px;font-size:11px;font-weight:850}.type.active{border-color:rgba(139,124,255,.55);color:var(--text);background:rgba(139,124,255,.12)}.platforms{display:flex;justify-content:center;flex-wrap:wrap;gap:7px;margin-top:24px}.platform{padding:7px 10px;border:1px solid var(--line);border-radius:999px;background:var(--surface);color:var(--muted);font-size:10px;font-weight:850}.announcement,.adcard{max-width:850px;margin:17px auto 0;border:1px solid var(--line);border-radius:18px;padding:13px 15px;background:var(--surface);font-size:12px;color:var(--muted)}.adcard a{font-weight:900;color:var(--accent)}
-.status{max-width:850px;margin:22px auto 0;border:1px solid var(--line);background:var(--surface);border-radius:22px;padding:18px;text-align:left}.statusline{display:flex;justify-content:space-between;gap:12px}.statusline b{font-size:13px}.statusline span{color:var(--muted);font-size:11px}.bar{height:7px;background:var(--surface3);border-radius:99px;margin-top:14px;overflow:hidden}.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:99px;transition:width .3s}.result{max-width:850px;margin:16px auto 0}.resultcard{border:1px solid var(--line);border-radius:24px;background:var(--surface);padding:16px;display:flex;gap:16px;align-items:center;text-align:left}.resultthumb{width:145px;height:95px;border-radius:16px;overflow:hidden;background:var(--surface3);flex:0 0 auto;display:grid;place-items:center;font-weight:950}.resultthumb img{width:100%;height:100%;object-fit:cover}.resultinfo{min-width:0;flex:1}.resultinfo h3{margin:0 0 6px;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.meta{color:var(--muted);font-size:11px}.actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.primary,.secondary,.danger{border-radius:12px;padding:9px 12px;font-size:11px;font-weight:900}.primary{border:0;background:var(--text);color:var(--bg)}.secondary{border:1px solid var(--line);background:var(--surface2);color:var(--text)}.danger{border:1px solid rgba(255,100,124,.25);background:rgba(255,100,124,.08);color:#ff8ca0}
-.section{padding-top:38px}.sectionhead,.viewhead{display:flex;align-items:end;justify-content:space-between;gap:16px;margin-bottom:16px}.sectionhead h2,.viewhead h2{margin:0;font-size:24px;letter-spacing:-1px}.sectionhead p,.viewhead p{margin:5px 0 0;color:var(--muted);font-size:12px}.features{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.feature{border:1px solid var(--line);background:var(--surface);border-radius:20px;padding:20px}.feature .ico{font-size:22px}.feature h3{margin:12px 0 7px;font-size:14px}.feature p{margin:0;color:var(--muted);font-size:11px;line-height:1.65}.viewhead{align-items:center}.clear{border:1px solid var(--line);background:var(--surface);color:var(--text);border-radius:12px;padding:9px 12px;font-size:11px;font-weight:850}.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.history{border:1px solid var(--line);background:var(--surface);border-radius:19px;padding:11px;display:flex;gap:12px;min-width:0}.thumb{width:115px;height:80px;border-radius:13px;background:var(--surface3);overflow:hidden;display:grid;place-items:center;font-weight:950;flex:0 0 auto}.thumb img{width:100%;height:100%;object-fit:cover}.hbody{min-width:0;flex:1}.htitle{font-size:12px;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:4px 0 6px}.hactions{display:flex;gap:6px;margin-top:10px}.small{border:1px solid var(--line);background:var(--surface2);color:var(--text);border-radius:9px;padding:7px 9px;font-size:10px;font-weight:850}.empty{border:1px dashed var(--line);border-radius:18px;padding:38px;text-align:center;color:var(--muted);font-size:12px}
-.overlay{position:fixed;inset:0;z-index:120;background:rgba(0,0,0,.65);backdrop-filter:blur(12px);display:flex;align-items:center;justify-content:center;padding:18px}.sheet{width:min(760px,100%);max-height:min(90vh,800px);overflow:auto;border:1px solid var(--line);background:var(--surface);border-radius:27px;box-shadow:var(--shadow)}.sheethead{padding:22px 24px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:15px}.sheethead h2{margin:0;font-size:21px}.sheethead p{margin:5px 0 0;color:var(--muted);font-size:11px}.close{border:1px solid var(--line);background:var(--surface2);color:var(--text);width:36px;height:36px;border-radius:12px;font-size:22px}.sheetbody{padding:22px}.balance{display:flex;justify-content:space-between;gap:15px;border:1px solid rgba(139,124,255,.3);background:linear-gradient(135deg,rgba(139,124,255,.14),rgba(192,132,252,.05));padding:20px;border-radius:20px}.balance small{display:block;color:var(--muted);font-size:10px;font-weight:800}.balance strong{font-size:38px;letter-spacing:-2px}.balright{text-align:right;color:var(--muted);font-size:11px;line-height:1.8}.balright b{color:var(--text)}.packages{display:grid;grid-template-columns:repeat(5,1fr);gap:9px;margin-top:13px}.pkg{border:1px solid var(--line);background:var(--surface2);border-radius:16px;padding:13px;text-align:center;position:relative}.pkg.selected{border-color:var(--accent);box-shadow:0 0 0 2px rgba(139,124,255,.13)}.pkg b{font-size:10px}.pkg .num{font-size:20px;font-weight:950;margin:9px 0 2px}.pkg .price{font-size:12px;color:var(--muted)}.pkg button{margin-top:10px;width:100%;border:0;background:var(--text);color:var(--bg);border-radius:9px;padding:8px;font-size:10px;font-weight:900}.paybox{margin-top:13px;padding:15px;border:1px solid var(--line);border-radius:17px;background:var(--surface2)}.payhint{color:var(--muted);font-size:11px;margin-bottom:10px}.continue{border:0;background:linear-gradient(135deg,#ffc439,#f59e0b);color:#241900;border-radius:12px;padding:11px 15px;font-size:11px;font-weight:950}.activity{margin-top:20px}.activity h3{font-size:13px}.tx{display:flex;justify-content:space-between;border-top:1px solid var(--line);padding:11px 0;color:var(--muted);font-size:10px}.tx b.plus{color:var(--good)}.tx b.minus{color:var(--bad)}
-.tabs{display:flex;background:var(--surface2);padding:4px;border-radius:13px;gap:4px}.tabs button{flex:1;border:0;background:transparent;color:var(--muted);border-radius:10px;padding:9px;font-size:11px;font-weight:900}.tabs button.active{background:var(--surface);color:var(--text);box-shadow:0 3px 14px rgba(0,0,0,.12)}.form{margin-top:17px}.field{margin-bottom:11px}.field label{display:block;font-size:10px;font-weight:850;color:var(--muted);margin:0 0 6px}.field input{width:100%;border:1px solid var(--line);background:var(--surface2);color:var(--text);outline:0;border-radius:12px;padding:12px}.field input:focus{border-color:var(--accent)}.formbtn{width:100%;border:0;background:linear-gradient(135deg,#7c6cff,#a855f7);color:#fff;border-radius:12px;padding:12px;font-weight:950}.subrow{display:flex;justify-content:space-between;gap:10px;margin-top:11px}.linkbtn{border:0;background:transparent;color:var(--accent);font-size:10px;font-weight:850}.googlebox{margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}.googlebox>div{display:flex;justify-content:center}.googlehint{text-align:center;color:var(--muted);font-size:10px;margin-top:8px}.accountcard{display:flex;gap:14px;align-items:center;padding:15px;border:1px solid var(--line);background:var(--surface2);border-radius:17px;margin-bottom:14px}.accountpic{width:48px;height:48px;border-radius:50%;object-fit:cover;background:var(--surface3)}.accountname{font-weight:950}.accountmeta{color:var(--muted);font-size:10px;margin-top:3px}.mobilebar{display:none}
-.toast{position:fixed;left:50%;bottom:25px;transform:translate(-50%,20px);z-index:300;background:#111827;color:#fff;border:1px solid #2c3850;border-radius:14px;padding:11px 14px;font-size:11px;font-weight:850;box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:.25s}.toast.show{opacity:1;transform:translate(-50%,0)}.toast.error{border-color:rgba(255,100,124,.5)}
-@media(max-width:800px){.nav{display:none}.menu{display:block}.head{gap:9px}.brand{font-size:22px}.headright{gap:5px}.creditpill{padding:8px 10px}.accountchip{max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.wrap{width:min(100% - 20px,700px)}main{padding-top:34px}h1{letter-spacing:-2.8px}.downbox{display:grid;grid-template-columns:1fr auto auto}.url{grid-column:1/-1;padding:14px}.paste,.download{height:45px}.features{grid-template-columns:1fr}.grid{grid-template-columns:1fr}.packages{grid-template-columns:repeat(2,1fr)}.resultcard{align-items:flex-start}.resultthumb{width:105px;height:75px}.mobilebar{display:flex;position:fixed;bottom:0;left:0;right:0;z-index:90;border-top:1px solid var(--line);background:color-mix(in srgb,var(--bg) 94%,transparent);backdrop-filter:blur(18px);padding:8px 7px calc(8px + env(safe-area-inset-bottom));gap:4px}.mobilebar button{flex:1;border:0;background:transparent;color:var(--muted);font-size:9px;font-weight:900;padding:6px 3px;border-radius:10px}.mobilebar button.active{background:var(--surface2);color:var(--text)}}
-@media(max-width:430px){.head .creditpill{display:none}.typebar{justify-content:stretch}.type{flex:1}.platforms{gap:5px}.platform{font-size:9px;padding:6px 8px}.balance strong{font-size:31px}.sheetbody{padding:15px}.history{padding:8px}.thumb{width:95px}.resultcard{display:block}.resultthumb{width:100%;height:150px}.resultinfo{margin-top:12px}}
 
-.installbar{position:relative;z-index:70;display:flex;align-items:center;gap:14px;margin:12px auto 0;width:min(1180px,calc(100% - 30px));padding:12px 14px;border:1px solid rgba(139,124,255,.35);border-radius:18px;background:linear-gradient(135deg,rgba(139,124,255,.14),rgba(192,132,252,.08));box-shadow:0 12px 40px rgba(0,0,0,.12);transition:all .25s ease}.installbar .installicon{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;background:var(--surface);border:1px solid var(--line);font-weight:950}.installbar .installcopy{min-width:0;flex:1}.installbar strong{display:block;font-size:12px}.installbar span{display:block;color:var(--muted);font-size:10px;margin-top:2px}.installbar button{border:0;border-radius:12px;padding:10px 14px;background:var(--text);color:var(--bg);font-size:11px;font-weight:950}.installbar .installclose{background:transparent;color:var(--muted);border:1px solid var(--line);padding:9px 11px}.installbar.hidden{display:none!important}@media(max-width:640px){.installbar{margin-top:8px;padding:10px}.installbar .installcopy span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.installbar button{padding:9px 11px}}
-</style>
-</head>
-<body>
-<header class="header"><div class="wrap head">
-  <button class="iconbtn menu" id="menuBtn">☰</button><a class="brand" href="#">Quick<span>DL</span></a>
-  <nav class="nav"><button data-view="home" class="active">Home</button><button data-view="history">History</button><button data-view="favorites">Favorites</button><button id="creditsBtn">Credits</button></nav>
-  <div class="headright"><div class="creditpill">Credits <b id="topCredits">50</b></div><button class="accountchip" id="accountChip">Sign in</button><button class="theme" id="themeBtn">☾</button></div>
-</div></header>
-<div id="installBar" class="installbar hidden"><div class="installicon">⬇</div><div class="installcopy"><strong>Install QuickDL</strong><span>Get a faster app-like experience on your device.</span></div><button id="installBtn">Install</button><button class="installclose" id="installClose" aria-label="Close">×</button></div>
-<main class="wrap">
-<section class="view active" id="homeView">
-  <div class="hero">
-    <div class="badge"><i class="dot"></i> QuickDL is ready</div>
-    <h1>One link.<br><span class="gradient">Instant media.</span></h1>
-    <p>Turn a supported media link into a clean video or audio file with a fast, simple workflow and one account for your credits.</p>
-    <div class="downbox"><input id="url" class="url" type="url" name="media_url" inputmode="url" autocomplete="url" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="go" placeholder="Paste a video link here…"><button class="paste" id="pasteBtn">📋 Paste</button><button class="download" id="download">Download</button></div>
-    <div class="typebar"><button class="type active" data-kind="video">🎬 Video · 2 credits</button><button class="type" data-kind="audio">🎧 MP3 · format conversion</button></div>
-    <div class="platforms"><span class="platform">YouTube</span><span class="platform">TikTok</span><span class="platform">Instagram</span><span class="platform">Facebook</span><span class="platform">Pinterest</span><span class="platform">X</span><span class="platform">Snapchat</span></div>
-    <div id="announcement" class="announcement hidden"></div><div id="adCard" class="adcard hidden"><span id="adText"></span> <a id="adLink" target="_blank" rel="noopener">Learn more</a></div>
-  </div>
-  <div id="status" class="status hidden"><div class="statusline"><b id="statusTitle">Preparing</b><span id="statusText">Starting…</span></div><div class="bar"><i id="statusBar"></i></div></div><div id="result" class="result"></div>
-  <div class="section"><div class="sectionhead"><div><h2>Built for a smooth flow</h2><p>Everything important stays close to the downloader.</p></div></div><div class="features"><article class="feature"><div class="ico">⚡</div><h3>Fast workflow</h3><p>Paste a link, choose a format, and follow a clear progress state until the file is ready.</p></article><article class="feature"><div class="ico">💳</div><h3>Simple credits</h3><p>New users receive 50 free credits every month. A video uses exactly 2 credits.</p></article><article class="feature"><div class="ico">🔐</div><h3>One account</h3><p>Email/password and Google Sign-In keep your profile, balance, history and purchases connected.</p></article></div></div>
+
+
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+
+
+
+  
+    QuickDL
+  
+  
+    Home
+    History
+    Favorites
+  
+  
+
+    ☼
+  
+
+
+
+  
+  
+
+
+<div id="announcement" class="announcement hidden"></div>
+
+<section class="hero">
+  <div class="badge">⚡ Fast · Simple · Private</div>
+
+  <h1>
+    Download media.<br>
+    <span>Without the hassle.</span>
+  </h1>
+
+  <p>
+    Paste a public media URL and preview your video instantly,
+    then download it as MP4 or MP3.
+  </p>
 </section>
-<section class="view" id="historyView"><div class="viewhead"><div><h2>History</h2><p>Your recent completed downloads.</p></div><button class="clear" id="clearHistory">Clear history</button></div><div id="historyList"></div></section>
-<section class="view" id="favoritesView"><div class="viewhead"><div><h2>Favorites</h2><p>Keep your favorite completed media one tap away.</p></div></div><div id="favoritesList"></div></section>
-</main>
-<nav class="mobilebar"><button data-view="home" class="active">⌂<br>Home</button><button data-view="history">◷<br>History</button><button data-view="favorites">★<br>Favorites</button><button id="mobileCredits">◈<br>Credits</button><button id="mobileAccount">◎<br>Account</button></nav>
-<div id="creditsOverlay" class="overlay hidden"><div class="sheet"><div class="sheethead"><div><h2>Credits</h2><p>50 free credits renew automatically each month.</p></div><button class="close" id="creditsClose">×</button></div><div class="sheetbody"><div class="balance"><div><small>Available</small><strong id="modalBalance">50</strong></div><div class="balright">Monthly free <b id="monthlyBalance">50</b><br>Video cost <b id="videoCost">2</b></div></div><div class="packages" id="packageGrid"></div><div class="paybox"><div class="payhint" id="paymentHint">Choose a package to add purchased credits.</div><button id="paypalPayBtn" class="continue" disabled>Continue with PayPal</button><div id="paypalButtons"></div></div><div class="activity"><h3>Recent activity</h3><div id="txList"></div></div></div></div></div>
-<div id="accountOverlay" class="overlay hidden"><div class="sheet"><div class="sheethead"><div><h2>Account</h2><p>Keep your identity, credits, history and purchases connected.</p></div><button class="close" id="accountClose">×</button></div><div class="sheetbody">
-  <div id="accountLogged" class="hidden"><div class="accountcard"><img id="accountPic" class="accountpic"><div><div id="accountName" class="accountname">QuickDL User</div><div id="accountMeta" class="accountmeta"></div></div></div><button class="formbtn" id="logoutBtn">Sign out</button></div>
-  <div id="accountAuth"><div class="tabs"><button class="active" data-tab="login">Sign in</button><button data-tab="signup">Create account</button></div>
-    <div id="loginForm" class="form"><div class="field"><label>Email</label><input id="loginEmail" type="email" autocomplete="email"></div><div class="field"><label>Password</label><input id="loginPassword" type="password" autocomplete="current-password"></div><button class="formbtn" id="loginSubmit">Sign in</button><div class="subrow"><button class="linkbtn" id="forgotOpen">Forgot password?</button><button class="linkbtn" data-tab="signup">Create account</button></div></div>
-    <div id="signupForm" class="form hidden"><div class="field"><label>Name</label><input id="signupName" autocomplete="name"></div><div class="field"><label>Email</label><input id="signupEmail" type="email" autocomplete="email"></div><div class="field"><label>Password · 8+ characters</label><input id="signupPassword" type="password" autocomplete="new-password"></div><button class="formbtn" id="signupSubmit">Create account</button><div class="subrow"><button class="linkbtn" data-tab="login">Already have an account?</button></div></div>
-    <div id="verifyForm" class="form hidden"><div class="field"><label>Email</label><input id="verifyEmail" type="email" autocomplete="email"></div><div class="field"><label>6-digit verification code</label><input id="verifyCode" inputmode="numeric" autocomplete="one-time-code"></div><button class="formbtn" id="verifySubmit">Verify email</button><div class="subrow"><button class="linkbtn" id="resendSignup">Send a new code</button><button class="linkbtn" data-tab="login">Back to sign in</button></div></div>
-    <div id="forgotForm" class="form hidden"><div class="field"><label>Email</label><input id="forgotEmail" type="email" autocomplete="email"></div><button class="formbtn" id="forgotSubmit">Send reset code</button><div class="subrow"><button class="linkbtn" id="showReset">I have a reset code</button><button class="linkbtn" data-tab="login">Back</button></div></div>
-    <div id="resetForm" class="form hidden"><div class="field"><label>6-digit reset code</label><input id="resetCode" inputmode="numeric" autocomplete="one-time-code"></div><div class="field"><label>New password</label><input id="resetPassword" type="password" autocomplete="new-password"></div><button class="formbtn" id="resetSubmit">Reset password</button></div>
-    <div class="googlebox"><div id="googleButton"></div><div id="googleHint" class="googlehint">Google Sign-In will appear here when enabled.</div></div>
-  </div>
-</div></div></div>
-<div class="toast" id="toast"></div>
-<script>
-const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-let configData={}, account=null, kind='video', selectedPackage=null, paypalSdkPromise=null;
-let favorites=new Set(JSON.parse(localStorage.getItem('quickdl_favorites')||'[]'));
-function toast(msg,type=''){const t=$('#toast');t.textContent=msg;t.className='toast show '+type;clearTimeout(window.__toast);window.__toast=setTimeout(()=>t.className='toast',3600)}
-function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function apiError(d){if(typeof d==='string')return d;if(d?.detail){if(typeof d.detail==='string')return d.detail;if(d.detail.message)return d.detail.message}if(d?.error==='internal_error'||d?.error==='credit_account_unavailable'||d?.error==='ACCOUNT_UNAVAILABLE')return d?.reference?'Something went wrong. Please try again. Reference: '+esc(d.reference):'Something went wrong. Please try again.';return d?.message||'Something went wrong. Please try again.'}
-async function api(url,opt={}){const headers=new Headers(opt.headers||{});const visitor=localStorage.getItem('quickdl_visitor');if(visitor && /^[a-f0-9]{32}$/.test(visitor))headers.set('X-QuickDL-Visitor',visitor);const o={credentials:'include',...opt,headers};const r=await fetch(url,o);let d={};try{d=await r.json()}catch{}if(!r.ok)throw new Error(apiError(d));return d}
-function setView(v){$$('.view').forEach(x=>x.classList.toggle('active',x.id===v+'View'));$$('[data-view]').forEach(x=>x.classList.toggle('active',x.dataset.view===v));location.hash=v==='home'?'':v;window.scrollTo({top:0,behavior:'smooth'});if(v==='history')loadHistory();if(v==='favorites')loadFavorites()}
-$$('[data-view]').forEach(b=>b.onclick=()=>setView(b.dataset.view));
-$('#menuBtn').onclick=()=>toast('Use the navigation buttons below.');
-$('#themeBtn').onclick=()=>{document.documentElement.classList.toggle('light');localStorage.setItem('quickdl_theme',document.documentElement.classList.contains('light')?'light':'dark');$('#themeBtn').textContent=document.documentElement.classList.contains('light')?'☀':'☾'};
-if(localStorage.getItem('quickdl_theme')==='light'){document.documentElement.classList.add('light');$('#themeBtn').textContent='☀'}
-$$('.type').forEach(b=>b.onclick=()=>{$$('.type').forEach(x=>x.classList.remove('active'));b.classList.add('active');kind=b.dataset.kind});
-$('#pasteBtn').onclick=async()=>{try{const text=await navigator.clipboard.readText();$('#url').value=text;toast(text?'Link pasted.':'Clipboard is empty.',text?'':'error')}catch{toast('Clipboard permission is unavailable. Long-press the box and choose Paste.','error')}};
-function status(title,text,pct){$('#status').classList.remove('hidden');$('#statusTitle').textContent=title;$('#statusText').textContent=text;$('#statusBar').style.width=Math.max(0,Math.min(100,pct))+'%'}
-function renderResult(x){$('#result').innerHTML='<div class="resultcard"><div class="resultthumb">'+(x.thumbnail?'<img src="'+esc(x.thumbnail)+'">':'QuickDL')+'</div><div class="resultinfo"><h3>'+esc(x.title||'Your media')+'</h3><div class="meta">'+esc(x.platform||'media')+' · '+esc((x.kind||kind).toUpperCase())+'</div><div class="actions"><a class="primary" href="'+esc(x.download_url)+'" download>Save file</a><a class="secondary" href="'+esc(x.preview_url||x.download_url)+'" target="_blank">Preview</a><button class="secondary" id="favoriteResult">'+(favorites.has(x.job_id)?'★ Saved':'☆ Favorite')+'</button><button class="secondary" id="newDownload">New download</button></div></div></div>';$('#favoriteResult').onclick=()=>{favorites.has(x.job_id)?favorites.delete(x.job_id):favorites.add(x.job_id);localStorage.setItem('quickdl_favorites',JSON.stringify([...favorites]));renderResult(x)};$('#newDownload').onclick=()=>{$('#url').focus();$('#result').innerHTML='';status('Ready','Paste another link to continue.',0)}}
-async function startDownload(){const url=$('#url').value.trim();if(!url)return toast('Paste a media link first.','error');const btn=$('#download');btn.disabled=true;$('#result').innerHTML='';status('Checking account','Preparing your download…',5);try{const a=await loadAccount();if(kind==='video'&&!a.unlimited&&Number(a.credits||0)<Number(a.video_cost||2)){await loadPackages();$('#creditsOverlay').classList.remove('hidden');status('Credits needed','Add credits to continue.',100);return}status('Starting','Creating your download job…',12);const d=await api('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,kind})});for(let i=0;i<360;i++){await new Promise(r=>setTimeout(r,900));const st=await api('/api/download/'+encodeURIComponent(d.job_id)+'?ts='+Date.now(),{cache:'no-store'});if(st.status==='completed'){status('Ready','Your file is ready.',100);renderResult(st);await loadAccount();loadHistory();return}if(st.status==='failed')throw new Error(st.error||'The download could not be completed.');status(st.status==='downloading'?'Downloading':'Queued',st.status==='downloading'?'Fetching and processing your media…':'Waiting for the download worker…',Math.min(96,18+Math.floor(i/4)))}throw new Error('This download is taking longer than expected. Check History and try again.')}catch(e){status('Could not finish',e.message,100);toast(e.message,'error')}finally{btn.disabled=false}}
-$('#download').onclick=startDownload;$('#url').addEventListener('keydown',e=>{if(e.key==='Enter')startDownload()});
-function relative(iso){try{const d=new Date(iso),s=(Date.now()-d)/1000;if(s<60)return 'just now';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago'}catch{return ''}}
-async function loadHistory(){try{const d=await api('/api/history?ts='+Date.now(),{cache:'no-store'});const items=d.items||[];$('#historyList').innerHTML=items.length?'<div class="grid">'+items.map(x=>'<article class="history"><div class="thumb">'+(x.thumbnail?'<img src="'+esc(x.thumbnail)+'">':'QD')+'</div><div class="hbody"><div class="htitle">'+esc(x.title)+'</div><div class="meta">'+esc(x.platform)+' · '+relative(x.created_at)+'</div><div class="hactions"><a class="small" href="'+esc(x.download_url)+'" download>Save</a><button class="small" onclick="openHistory(\''+esc(x.job_id)+'\')">Open</button><button class="small" onclick="toggleFav(\''+esc(x.job_id)+'\')">'+(favorites.has(x.job_id)?'★':'☆')+'</button></div></div></article>').join('')+'</div>':'<div class="empty">No completed downloads yet.</div>'}catch{$('#historyList').innerHTML='<div class="empty">History is temporarily unavailable.</div>'}}
-async function loadFavorites(){try{const d=await api('/api/history?ts='+Date.now(),{cache:'no-store'});const items=(d.items||[]).filter(x=>favorites.has(x.job_id));$('#favoritesList').innerHTML=items.length?'<div class="grid">'+items.map(x=>'<article class="history"><div class="thumb">'+(x.thumbnail?'<img src="'+esc(x.thumbnail)+'">':'QD')+'</div><div class="hbody"><div class="htitle">'+esc(x.title)+'</div><div class="meta">'+esc(x.platform)+' · '+relative(x.created_at)+'</div><div class="hactions"><a class="small" href="'+esc(x.download_url)+'" download>Save</a><button class="small" onclick="openHistory(\''+esc(x.job_id)+'\')">Open</button><button class="small" onclick="toggleFav(\''+esc(x.job_id)+'\')">★ Remove</button></div></div></article>').join('')+'</div>':'<div class="empty">No favorites yet.</div>'}catch{$('#favoritesList').innerHTML='<div class="empty">Favorites are temporarily unavailable.</div>'}}
-function toggleFav(id){favorites.has(id)?favorites.delete(id):favorites.add(id);localStorage.setItem('quickdl_favorites',JSON.stringify([...favorites]));loadHistory();loadFavorites()}
-async function openHistory(id){try{const d=await api('/api/download/'+encodeURIComponent(id));if(d.status!=='completed')throw new Error(d.error||'File unavailable');setView('home');renderResult(d)}catch(e){toast(e.message,'error')}}
-$('#clearHistory').onclick=async()=>{if(!confirm('Clear your history?'))return;try{await api('/api/history',{method:'DELETE'});loadHistory();toast('History cleared.')}catch(e){toast(e.message,'error')}};
-async function loadAccount(){try{account=await api('/api/account?ts='+Date.now(),{cache:'no-store'});$('#topCredits').textContent=account.unlimited?'∞':Number(account.credits??0).toLocaleString();$('#modalBalance').textContent=account.unlimited?'∞':Number(account.credits??0).toLocaleString();$('#monthlyBalance').textContent=Number(account.monthly_free||50).toLocaleString();$('#videoCost').textContent=Number(account.video_cost||2);if(account.authenticated){$('#accountChip').innerHTML=(account.google_picture?'<img class="avatar" src="'+esc(account.google_picture)+'">':'')+esc(account.display_name||'Account');$('#accountLogged').classList.remove('hidden');$('#accountAuth').classList.add('hidden');$('#accountName').textContent=account.display_name||'QuickDL User';$('#accountMeta').textContent=(account.email||account.google_email||'')+' · ID '+account.user_code;$('#accountPic').src=account.google_picture||'/static/icon-192.png'}else{$('#accountChip').textContent='Sign in';$('#accountLogged').classList.add('hidden');$('#accountAuth').classList.remove('hidden')}return account}catch(e){throw e}}
-async function openAccount(){try{await loadAccount();$('#accountOverlay').classList.remove('hidden');renderGoogle()}catch(e){toast(e.message||'Something went wrong. Please try again.','error')}}
-$('#accountChip').onclick=openAccount;$('#mobileAccount').onclick=openAccount;$('#accountClose').onclick=()=>$('#accountOverlay').classList.add('hidden');$('#accountOverlay').onclick=e=>{if(e.target.id==='accountOverlay')e.currentTarget.classList.add('hidden')};
-$('#logoutBtn').onclick=async()=>{const b=$('#logoutBtn');b.disabled=true;try{await api('/api/auth/logout',{method:'POST'});}catch(e){console.warn('logout',e)}finally{localStorage.removeItem('quickdl_visitor');account=null;$('#accountOverlay').classList.add('hidden');b.disabled=false;location.reload()}};
-function switchTab(tab){$$('.tabs button').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));['loginForm','signupForm','verifyForm','forgotForm','resetForm'].forEach(x=>$('#'+x).classList.add('hidden'));$('#'+(tab==='login'?'loginForm':tab==='signup'?'signupForm':tab+'Form')).classList.remove('hidden')}
-$$('[data-tab]').forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
-$('#signupSubmit').onclick=async()=>{try{const d=await api('/api/auth/signup/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#signupName').value,email:$('#signupEmail').value,password:$('#signupPassword').value})});if(d.verification_required){$('#verifyEmail').value=$('#signupEmail').value;switchTab('verify');toast(d.message)}else{if(d.visitor_id)localStorage.setItem('quickdl_visitor',d.visitor_id);await loadAccount();$('#accountOverlay').classList.add('hidden');toast('Account created successfully.')} }catch(e){toast(e.message,'error')}};
-$('#verifySubmit').onclick=async()=>{try{const d=await api('/api/auth/signup/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('#verifyEmail').value,code:$('#verifyCode').value})});localStorage.setItem('quickdl_visitor',d.visitor_id);await loadAccount();$('#accountOverlay').classList.add('hidden');toast(d.welcome_email_sent?'Email verified — welcome email sent.':'Email verified successfully.')}catch(e){toast(e.message,'error')}};
-$('#resendSignup').onclick=()=>{$('#signupEmail').value=$('#verifyEmail').value;$('#signupSubmit').click()};
-$('#loginSubmit').onclick=async()=>{try{const d=await api('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('#loginEmail').value,password:$('#loginPassword').value})});localStorage.setItem('quickdl_visitor',d.visitor_id);await loadAccount();$('#accountOverlay').classList.add('hidden');toast('Signed in successfully.')}catch(e){toast(e.message,'error')}};
-$('#forgotOpen').onclick=()=>{$('#forgotEmail').value=$('#loginEmail').value;switchTab('forgot')};$('#forgotSubmit').onclick=async()=>{try{const d=await api('/api/auth/forgot',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('#forgotEmail').value})});toast(d.message)}catch(e){toast(e.message,'error')}};$('#showReset').onclick=()=>{$('#resetCode').value='';switchTab('reset')};$('#resetSubmit').onclick=async()=>{try{const d=await api('/api/auth/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('#forgotEmail').value,code:$('#resetCode').value,password:$('#resetPassword').value})});localStorage.setItem('quickdl_visitor',d.visitor_id);await loadAccount();$('#accountOverlay').classList.add('hidden');toast('Password reset successfully.')}catch(e){toast(e.message,'error')}};
-function renderGoogle(){const c=configData;if(!c?.google_login_enabled||!c.google_client_id){$('#googleButton').innerHTML='';$('#googleHint').textContent='Google Sign-In is currently unavailable.';return}if(window.google?.accounts?.id){window.google.accounts.id.initialize({client_id:c.google_client_id,callback:onGoogle,auto_select:false,cancel_on_tap_outside:true});$('#googleButton').innerHTML='';window.google.accounts.id.renderButton($('#googleButton'),{theme:document.documentElement.classList.contains('light')?'outline':'filled_black',size:'large',shape:'pill',text:'signin_with',width:300});return}if(!window.__g){window.__g=new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://accounts.google.com/gsi/client';s.async=true;s.defer=true;s.onload=res;s.onerror=()=>rej(new Error('Google Sign-In could not load.'));document.head.appendChild(s)})}window.__g.then(renderGoogle).catch(e=>$('#googleHint').textContent=e.message)}
-async function onGoogle(r){try{const d=await api('/api/auth/google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential:r.credential})});localStorage.setItem('quickdl_visitor',d.visitor_id);await loadAccount();$('#accountOverlay').classList.add('hidden');toast(d.welcome_email_sent?'Google connected — welcome email sent.':'Google connected successfully.')}catch(e){toast(e.message,'error')}}
-$('#creditsBtn').onclick=async()=>{try{await loadAccount();await loadPackages();await loadTransactions();$('#creditsOverlay').classList.remove('hidden')}catch(e){toast(e.message||'Something went wrong. Please try again.','error')}};$('#mobileCredits').onclick=$('#creditsBtn').onclick;$('#creditsClose').onclick=()=>$('#creditsOverlay').classList.add('hidden');$('#creditsOverlay').onclick=e=>{if(e.target.id==='creditsOverlay')e.currentTarget.classList.add('hidden')};
-async function loadPackages(){try{const d=await api('/api/credits/packages');window.__packages=d.packages||[];$('#packageGrid').innerHTML=window.__packages.map(p=>'<div class="pkg" data-id="'+esc(p.id)+'"><b>'+esc(p.name)+'</b><div class="num">'+Number(p.credits).toLocaleString()+'</div><div class="price">$'+esc(p.price)+'</div><button onclick="selectPackage(\''+esc(p.id)+'\')">Choose</button></div>').join('')}catch{$('#packageGrid').innerHTML='<div class="empty">Packages could not be loaded.</div>'}}
-function selectPackage(id){selectedPackage=id;$$('.pkg').forEach(x=>x.classList.toggle('selected',x.dataset.id===id));const p=window.__packages.find(x=>x.id===id);$('#paypalPayBtn').disabled=false;$('#paymentHint').textContent=p.name+' · '+Number(p.credits).toLocaleString()+' credits · $'+p.price}
-async function loadTransactions(){try{const d=await api('/api/credits/transactions?limit=10');$('#txList').innerHTML=(d.items||[]).map(x=>'<div class="tx"><span>'+esc(x.type)+' · '+(x.created_at?new Date(x.created_at).toLocaleString():'')+'</span><b class="'+(x.credits>=0?'plus':'minus')+'">'+(x.credits>=0?'+':'')+x.credits+'</b></div>').join('')||'<div class="empty">No activity yet.</div>'}catch{$('#txList').innerHTML='<div class="empty">No activity yet.</div>'}}
-async function pay(){if(!selectedPackage)return;const b=$('#paypalPayBtn');b.disabled=true;try{const c=configData;if(!c?.paypal_live_ready)throw new Error('Payments are temporarily unavailable. Please try again later.');if(!paypalSdkPromise)paypalSdkPromise=new Promise((res,rej)=>{if(window.paypal)return res();const s=document.createElement('script');s.src='https://www.paypal.com/sdk/js?client-id='+encodeURIComponent(c.paypal_client_id)+'&currency='+encodeURIComponent(c.currency||'USD')+'&intent=capture&components=buttons';s.onload=res;s.onerror=()=>rej(new Error('PayPal could not load.'));document.head.appendChild(s)});await paypalSdkPromise;$('#paypalButtons').innerHTML='';b.classList.add('hidden');window.paypal.Buttons({style:{layout:'vertical',shape:'rect',label:'paypal'},createOrder:()=>api('/paypal-api/checkout/orders/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({package_id:selectedPackage})}).then(x=>x.id),onApprove:data=>api('/paypal-api/checkout/orders/'+encodeURIComponent(data.orderID)+'/capture',{method:'POST'}).then(async()=>{await loadAccount();await loadTransactions();toast('Payment completed — credits added.');setTimeout(()=>$('#creditsOverlay').classList.add('hidden'),700)}).catch(e=>toast(e.message,'error')),onCancel:()=>{b.classList.remove('hidden');b.disabled=false},onError:e=>{console.error(e);b.classList.remove('hidden');b.disabled=false;toast('PayPal checkout failed.','error')}}).render('#paypalButtons')}catch(e){b.disabled=false;toast(e.message,'error')}}$('#paypalPayBtn').onclick=pay;
-async function config(){configData=await api('/api/public-config?ts='+Date.now(),{cache:'no-store'});if(configData.announcement_enabled&&configData.announcement){$('#announcement').textContent=configData.announcement;$('#announcement').classList.remove('hidden')}if(configData.ads_enabled&&configData.ads_text){$('#adText').textContent=configData.ads_text;$('#adLink').textContent=configData.ads_button_text||'Learn more';if(/^https?:\/\//i.test(configData.ads_url||''))$('#adLink').href=configData.ads_url;else $('#adLink').classList.add('hidden');$('#adCard').classList.remove('hidden')}renderGoogle()}
-(async()=>{try{await config()}catch(e){console.error('config',e)}try{await loadAccount()}catch(e){console.error('account bootstrap',e);$('#accountChip').textContent='Sign in'}try{await loadHistory()}catch(e){console.error('history',e)}const h=location.hash.slice(1);if(['history','favorites'].includes(h))setView(h)})();
 
-let deferredInstall=null;
-function isInstalled(){return window.matchMedia('(display-mode: standalone)').matches||window.navigator.standalone===true||document.referrer.startsWith('android-app://')}
-function showInstall(){if(isInstalled()){$('#installBar').classList.add('hidden');return}$('#installBar').classList.remove('hidden')}
-window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstall=e;showInstall()});
-window.addEventListener('appinstalled',()=>{deferredInstall=null;$('#installBar').classList.add('hidden');toast('QuickDL installed successfully.')});
-$('#installBtn').onclick=async()=>{if(deferredInstall){deferredInstall.prompt();try{await deferredInstall.userChoice}catch{}deferredInstall=null;return}toast('Use your browser menu and choose “Add to Home screen” to install.')}
-$('#installClose').onclick=()=>$('#installBar').classList.add('hidden');
-if(!isInstalled())showInstall();
-if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(e=>console.warn('service worker',e));
-</script>
-</body></html>
+
+<!-- DOWNLOADER -->
+<section class="download-card" id="dropZone">
+
+  <div class="input-row">
+
+    <input
+      id="url"
+      type="url"
+      placeholder="Paste video link here…"
+      autocomplete="off"
+      spellcheck="false"
+      aria-label="Media URL"
+    >
+
+    <select id="kind" aria-label="Download type">
+      <option value="video">Video MP4</option>
+      <option value="audio">Audio MP3</option>
+    </select>
+
+    <button id="downloadBtn" type="button">
+      Download
+    </button>
+
+  </div>
+
+  <div class="drop-note">
+    Paste a link and QuickDL will automatically prepare a preview.
+  </div>
+
+  <div id="status" class="status"></div>
+
+</section>
+
+
+<!-- SUPPORTED PLATFORMS -->
+<div class="platforms">
+  <span>YouTube</span>
+  <span>YouTube Shorts</span>
+  <span>TikTok</span>
+  <span>Instagram</span>
+  <span>Facebook</span>
+  <span>Pinterest</span>
+  <span>Snapchat</span>
+  <span>X / Twitter</span>
+  <span>Other Web</span>
+</div>
+
+
+<!-- PREVIEW -->
+<section id="previewSection" class="preview-section hidden">
+
+  <div class="preview-card">
+
+    <div class="preview-media" id="previewMedia">
+      <!-- JS inserts video/audio here -->
+    </div>
+
+    <div class="preview-info">
+
+      <div class="preview-meta">
+
+        <img
+          id="previewThumb"
+          class="preview-thumb hidden"
+          alt=""
+        >
+
+        <div>
+          <div id="previewTitle" class="preview-title">
+            Media
+          </div>
+
+          <div id="previewPlatform" class="preview-platform">
+            Ready
+          </div>
+        </div>
+
+      </div>
+
+      <div class="preview-actions">
+
+        <button
+          id="saveFavorite"
+          class="action-btn"
+          type="button"
+        >
+          ☆ Save
+        </button>
+
+        <button
+          id="copyLink"
+          class="action-btn"
+          type="button"
+        >
+          Copy link
+        </button>
+
+        <a
+          id="realDownload"
+          class="action-btn primary"
+          href="#"
+          download
+        >
+          Download file
+        </a>
+
+      </div>
+
+    </div>
+
+  </div>
+
+</section>
+
+
+  
+
+  
+  
+
+
+<div class="view-head">
+
+  <div>
+    <h2>History</h2>
+    <p>Your recent completed downloads.</p>
+  </div>
+
+  <button id="clear" type="button">
+    Clear history
+  </button>
+
+</div>
+
+<div id="history"></div>
+
+
+  
+
+  
+  
+
+
+<div class="view-head">
+
+  <div>
+    <h2>Favorites</h2>
+    <p>Saved downloads on this device.</p>
+  </div>
+
+</div>
+
+<div id="favorites"></div>
+
+
+  
+
+
+
+
+
