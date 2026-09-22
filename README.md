@@ -32,15 +32,8 @@ QuickDL is a FastAPI + PostgreSQL media downloader with a credit system, email/p
 
 Third-party media providers can change their delivery systems. QuickDL supports public media only and does not bypass private access, DRM or CAPTCHA protections.
 
-## v35 Free Mode
 
-Admin can enable **Free Mode / Guest Downloads** from `/admin18` → Settings. When enabled, QuickDL hides account/credit/payment UI, does not load Google/PayPal SDKs, bypasses credit charging, and allows guest downloads.
+## Admin Free Mode (v36)
+The Admin Settings page now includes **Free Mode Control**. When Free Mode is OPEN: users do not need Sign in/Sign up, credit balances and credit packages are disabled, PayPal/payment routes are blocked, and video/audio downloads cost 0 credits. The frontend does not load account, Google, or PayPal SDKs while Free Mode is active. Closing Free Mode restores the normal account/credit/payment system.
 
-Support: WhatsApp **+252 90 7868526** — https://wa.me/252907868526
-
-
-## Admin panel
-- Open `https://YOUR-DOMAIN/admin` (also available at `/admin18`).
-- Set `ADMIN_PASSWORD` and `ADMIN_SESSION_SECRET` in Render environment variables.
-- The Admin → Control page provides Free Mode, Login/Sign up, Downloads and Maintenance controls.
-- Free Mode ON disables public accounts/payments/credit charging while keeping downloads available and the admin panel accessible.
+Support: WhatsApp +252 90 786 8526.
