@@ -352,17 +352,18 @@ def current_month_key():
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
 def ensure_credit_account(db, visitor_id):
-    """Get/create the visitor credit row without a first-request race.
+    """Atomically get/create a visitor credit account.
 
-    Telegram's login page can be opened while QuickDL also calls /api/account.
-    Those requests may arrive at the same time for a brand-new visitor. The old
-    SELECT-then-INSERT pattern could make the losing transaction hit a unique
-    constraint and incorrectly raise ``credit account creation race could not be
-    resolved``. PostgreSQL's INSERT ... ON CONFLICT DO NOTHING makes creation
-    atomic; after the insert we always re-read the winning row.
+    PostgreSQL deployments can receive /api/account and Telegram requests at the
+    same time.  A plain SELECT-then-INSERT is racy, and even ON CONFLICT DO NOTHING
+    can hide a conflict on the generated user_code.  We serialize creation for the
+    visitor with a transaction-scoped PostgreSQL advisory lock, then use a nested
+    transaction for the INSERT so a user_code collision never poisons the caller's
+    transaction.
     """
     if not visitor_id or not re.fullmatch(r"[a-f0-9]{32}", str(visitor_id)):
         raise ValueError("invalid visitor_id")
+
     month = current_month_key()
     try:
         monthly_free = max(0, int(setting_get("monthly_free_credits", db) or MONTHLY_FREE_CREDITS))
@@ -371,70 +372,83 @@ def ensure_credit_account(db, visitor_id):
         monthly_free = max(0, MONTHLY_FREE_CREDITS)
     now = datetime.now(timezone.utc)
 
-    # Fast path: the row already exists. Lock it before changing monthly credits.
-    account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
+    dialect = db.bind.dialect.name if db.bind is not None else ""
+
+    # Serialize creation/update of this visitor across all application workers.
+    # pg_advisory_xact_lock is released automatically when this transaction ends.
+    if dialect == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:visitor_id))"), {"visitor_id": str(visitor_id)})
+
+    account = db.scalar(
+        select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update()
+    )
+
     if account is None:
-        for _ in range(30):
+        for _ in range(50):
             code = str(secrets.randbelow(9_000_000_000) + 1_000_000_000)
-            values = dict(visitor_id=visitor_id, user_code=code,
-                          free_credits=monthly_free, purchased_credits=0,
-                          month_key=month, created_at=now, updated_at=now, unlimited=False)
+            values = dict(
+                visitor_id=visitor_id, user_code=code,
+                free_credits=monthly_free, purchased_credits=0,
+                month_key=month, created_at=now, updated_at=now, unlimited=False
+            )
             try:
-                if db.bind.dialect.name == "postgresql" and pg_insert is not None:
-                    stmt = pg_insert(CreditAccount).values(**values).on_conflict_do_nothing()
-                elif db.bind.dialect.name == "sqlite" and sqlite_insert is not None:
-                    stmt = sqlite_insert(CreditAccount).values(**values).on_conflict_do_nothing()
+                if dialect == "postgresql" and pg_insert is not None:
+                    stmt = (
+                        pg_insert(CreditAccount)
+                        .values(**values)
+                        .on_conflict_do_nothing(index_elements=[CreditAccount.visitor_id])
+                    )
+                    # Savepoint: if the random user_code collides, only the savepoint
+                    # is rolled back; the outer transaction and advisory lock survive.
+                    with db.begin_nested():
+                        db.execute(stmt)
+                elif dialect == "sqlite" and sqlite_insert is not None:
+                    stmt = (
+                        sqlite_insert(CreditAccount)
+                        .values(**values)
+                        .on_conflict_do_nothing(index_elements=[CreditAccount.visitor_id])
+                    )
+                    with db.begin_nested():
+                        db.execute(stmt)
                 else:
-                    # Other dialects are not expected in production, but keep the
-                    # old nested-transaction behavior as a compatibility fallback.
                     with db.begin_nested():
                         db.add(CreditAccount(**values))
                         db.flush()
-                    stmt = None
-                if stmt is not None:
-                    db.execute(stmt)
-
-                account = db.scalar(
-                    select(CreditAccount)
-                    .where(CreditAccount.visitor_id == visitor_id)
-                    .with_for_update()
-                )
-                if account is not None:
-                    break
             except IntegrityError:
-                # A generated user_code may collide with an existing row. The
-                # next attempt generates another code; the transaction stays usable
-                # because PostgreSQL ON CONFLICT is used for the normal path.
-                try:
-                    db.rollback()
-                except Exception:
-                    pass
-                account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
-                if account is not None:
-                    break
+                # Usually a generated user_code collision. Try another code without
+                # rolling back the caller's transaction.
+                continue
+
+            account = db.scalar(
+                select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update()
+            )
+            if account is not None:
+                break
+
         if account is None:
-            raise RuntimeError("credit account creation race could not be resolved")
+            # This should now be unreachable unless the database schema itself is
+            # broken (for example, a missing/invalid credit_accounts table).
+            raise RuntimeError("credit account could not be created; check database schema and unique indexes")
 
     if not account.user_code:
-        for _ in range(30):
+        for _ in range(50):
             code = str(secrets.randbelow(9_000_000_000) + 1_000_000_000)
             try:
-                account.user_code = code
-                db.flush()
+                with db.begin_nested():
+                    account.user_code = code
+                    db.flush()
                 break
             except IntegrityError:
-                db.rollback()
-                account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
-                if account and account.user_code:
+                db.refresh(account)
+                if account.user_code:
                     break
-        if not account or not account.user_code:
-            raise RuntimeError("credit account has no user ID")
+        if not account.user_code:
+            raise RuntimeError("credit account has no user ID; check the user_code unique index")
 
-    if not free_mode_enabled():
-        if account.month_key != month:
-            account.month_key = month
-            account.free_credits = monthly_free
-            account.updated_at = now
+    if not free_mode_enabled() and account.month_key != month:
+        account.month_key = month
+        account.free_credits = monthly_free
+        account.updated_at = now
     return account
 
 def credit_balance(account):
