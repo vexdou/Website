@@ -352,14 +352,19 @@ def current_month_key():
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
 def ensure_credit_account(db, visitor_id):
-    """Atomically get/create a visitor credit account.
+    """Get/create a credit account without relying on a fragile user_code insert.
 
-    PostgreSQL deployments can receive /api/account and Telegram requests at the
-    same time.  A plain SELECT-then-INSERT is racy, and even ON CONFLICT DO NOTHING
-    can hide a conflict on the generated user_code.  We serialize creation for the
-    visitor with a transaction-scoped PostgreSQL advisory lock, then use a nested
-    transaction for the INSERT so a user_code collision never poisons the caller's
-    transaction.
+    The legacy database may already exist with older indexes.  The safest path is:
+    1) serialize this visitor with a PostgreSQL advisory transaction lock;
+    2) read the existing account;
+    3) insert with user_code=NULL so a random user-code collision cannot abort creation;
+    4) re-read the row;
+    5) assign the public user_code in a separate savepoint.
+
+    PostgreSQL ON CONFLICT DO NOTHING without an explicit target is deliberately used
+    here because it can tolerate any existing unique constraint/index in an older
+    schema. The advisory lock prevents two QuickDL workers from creating the same
+    visitor concurrently even if the old database is missing the expected index.
     """
     if not visitor_id or not re.fullmatch(r"[a-f0-9]{32}", str(visitor_id)):
         raise ValueError("invalid visitor_id")
@@ -371,79 +376,86 @@ def ensure_credit_account(db, visitor_id):
         log.exception("monthly credit setting read failed; using default")
         monthly_free = max(0, MONTHLY_FREE_CREDITS)
     now = datetime.now(timezone.utc)
-
     dialect = db.bind.dialect.name if db.bind is not None else ""
 
-    # Serialize creation/update of this visitor across all application workers.
-    # pg_advisory_xact_lock is released automatically when this transaction ends.
     if dialect == "postgresql":
         db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:visitor_id))"), {"visitor_id": str(visitor_id)})
 
     account = db.scalar(
-        select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update()
+        select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).limit(1).with_for_update()
     )
 
     if account is None:
-        for _ in range(50):
-            code = str(secrets.randbelow(9_000_000_000) + 1_000_000_000)
-            values = dict(
-                visitor_id=visitor_id, user_code=code,
-                free_credits=monthly_free, purchased_credits=0,
-                month_key=month, created_at=now, updated_at=now, unlimited=False
-            )
+        values = dict(
+            visitor_id=visitor_id,
+            user_code=None,
+            free_credits=monthly_free,
+            purchased_credits=0,
+            month_key=month,
+            created_at=now,
+            updated_at=now,
+            unlimited=False,
+        )
+        last_error = None
+        for attempt in range(3):
             try:
-                if dialect == "postgresql" and pg_insert is not None:
-                    stmt = (
-                        pg_insert(CreditAccount)
-                        .values(**values)
-                        .on_conflict_do_nothing(index_elements=[CreditAccount.visitor_id])
-                    )
-                    # Savepoint: if the random user_code collides, only the savepoint
-                    # is rolled back; the outer transaction and advisory lock survive.
-                    with db.begin_nested():
-                        db.execute(stmt)
-                elif dialect == "sqlite" and sqlite_insert is not None:
-                    stmt = (
-                        sqlite_insert(CreditAccount)
-                        .values(**values)
-                        .on_conflict_do_nothing(index_elements=[CreditAccount.visitor_id])
-                    )
-                    with db.begin_nested():
-                        db.execute(stmt)
-                else:
-                    with db.begin_nested():
+                with db.begin_nested():
+                    if dialect == "postgresql" and pg_insert is not None:
+                        db.execute(pg_insert(CreditAccount).values(**values).on_conflict_do_nothing())
+                    elif dialect == "sqlite" and sqlite_insert is not None:
+                        db.execute(sqlite_insert(CreditAccount).values(**values).on_conflict_do_nothing())
+                    else:
                         db.add(CreditAccount(**values))
                         db.flush()
-            except IntegrityError:
-                # Usually a generated user_code collision. Try another code without
-                # rolling back the caller's transaction.
-                continue
-
-            account = db.scalar(
-                select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update()
-            )
-            if account is not None:
-                break
+                account = db.scalar(
+                    select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).limit(1).with_for_update()
+                )
+                if account is not None:
+                    break
+            except IntegrityError as exc:
+                last_error = exc
+                # The savepoint is rolled back automatically; re-read in case another
+                # worker/process already created the row.
+                try:
+                    account = db.scalar(
+                        select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).limit(1).with_for_update()
+                    )
+                except Exception:
+                    account = None
+                if account is not None:
+                    break
+                time.sleep(0.05 * (attempt + 1))
+            except Exception as exc:
+                # Do not hide the real database error in logs. The browser still gets
+                # a safe message, while the server log contains the exact exception.
+                log.exception("credit account insert failed visitor=%s attempt=%s", visitor_id, attempt + 1)
+                raise
 
         if account is None:
-            # This should now be unreachable unless the database schema itself is
-            # broken (for example, a missing/invalid credit_accounts table).
-            raise RuntimeError("credit account could not be created; check database schema and unique indexes")
+            if last_error:
+                log.exception("credit account creation failed after savepoint retries: %s", last_error)
+            raise RuntimeError("credit account could not be created; database schema/index mismatch")
 
     if not account.user_code:
+        assigned = False
         for _ in range(50):
             code = str(secrets.randbelow(9_000_000_000) + 1_000_000_000)
             try:
                 with db.begin_nested():
                     account.user_code = code
                     db.flush()
+                assigned = True
                 break
             except IntegrityError:
-                db.refresh(account)
+                try:
+                    db.refresh(account)
+                except Exception:
+                    pass
                 if account.user_code:
+                    assigned = True
                     break
-        if not account.user_code:
-            raise RuntimeError("credit account has no user ID; check the user_code unique index")
+        if not assigned or not account.user_code:
+            raise RuntimeError("credit account user ID could not be assigned")
 
     if not free_mode_enabled() and account.month_key != month:
         account.month_key = month
