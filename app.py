@@ -1,4 +1,4 @@
-import os, re, time, uuid, mimetypes, logging, threading, ipaddress, socket, shutil, json, secrets, smtplib, ssl, hashlib, hmac, base64, asyncio
+import os, re, time, uuid, mimetypes, logging, threading, ipaddress, socket, shutil, json, secrets, smtplib, ssl, hashlib, hmac, base64
 from email.message import EmailMessage
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,20 +14,11 @@ try:
 except Exception:
     curl_requests = None
 from html import unescape
-from fastapi import FastAPI, HTTPException, Cookie, Request, Header, Depends
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, RedirectResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import FastAPI, HTTPException, Cookie, Request, Header
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy import create_engine, String, Text, Integer, DateTime, select, update, delete, func
 from sqlalchemy.exc import IntegrityError, OperationalError
-try:
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-except Exception:
-    pg_insert = None
-try:
-    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-except Exception:
-    sqlite_insert = None
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 try:
     from google.oauth2 import id_token as google_id_token
@@ -36,7 +27,6 @@ except Exception:
     google_id_token = None
     google_requests = None
 from contextlib import asynccontextmanager
-from telegram_mtproto import configured as telegram_mtproto_configured, encrypt_session as telegram_encrypt_session, decrypt_session as telegram_decrypt_session, send_code as telegram_send_code, sign_in as telegram_sign_in, check_password as telegram_check_password, get_me as telegram_get_me, dialogs as telegram_dialogs, messages as telegram_messages, send_message as telegram_send_message
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("quickdl")
@@ -96,23 +86,6 @@ class CreditAccount(Base):
     google_linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     google_welcome_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     welcome_email_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    telegram_id: Mapped[str | None] = mapped_column(String(32), unique=True, nullable=True, index=True)
-    telegram_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    telegram_first_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    telegram_last_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    telegram_photo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    telegram_auth_date: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    telegram_linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    telegram_broadcast_opt_in: Mapped[bool] = mapped_column(Boolean, default=False)
-    telegram_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    telegram_last_broadcast_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    telegram_session_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
-    telegram_pending_session_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
-    telegram_pending_phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    telegram_pending_code_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    telegram_admin_chat_access: Mapped[bool] = mapped_column(Boolean, default=False)
-    telegram_admin_chat_access_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    telegram_last_active_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     email: Mapped[str | None] = mapped_column(String(320), nullable=True, index=True)
     auth_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -189,23 +162,6 @@ def migrate_credit_columns():
                 ("credit_accounts", "google_linked_at", "TIMESTAMPTZ"),
                 ("credit_accounts", "google_welcome_sent_at", "TIMESTAMPTZ"),
                 ("credit_accounts", "welcome_email_sent_at", "TIMESTAMPTZ"),
-                ("credit_accounts", "telegram_id", "VARCHAR(32)"),
-                ("credit_accounts", "telegram_username", "VARCHAR(255)"),
-                ("credit_accounts", "telegram_first_name", "VARCHAR(255)"),
-                ("credit_accounts", "telegram_last_name", "VARCHAR(255)"),
-                ("credit_accounts", "telegram_photo_url", "TEXT"),
-                ("credit_accounts", "telegram_auth_date", "BIGINT"),
-                ("credit_accounts", "telegram_linked_at", "TIMESTAMPTZ"),
-                ("credit_accounts", "telegram_broadcast_opt_in", "BOOLEAN NOT NULL DEFAULT FALSE"),
-                ("credit_accounts", "telegram_consent_at", "TIMESTAMPTZ"),
-                ("credit_accounts", "telegram_last_broadcast_at", "TIMESTAMPTZ"),
-                ("credit_accounts", "telegram_session_encrypted", "TEXT"),
-                ("credit_accounts", "telegram_pending_session_encrypted", "TEXT"),
-                ("credit_accounts", "telegram_pending_phone", "VARCHAR(40)"),
-                ("credit_accounts", "telegram_pending_code_hash", "VARCHAR(255)"),
-                ("credit_accounts", "telegram_admin_chat_access", "BOOLEAN NOT NULL DEFAULT FALSE"),
-                ("credit_accounts", "telegram_admin_chat_access_at", "TIMESTAMPTZ"),
-                ("credit_accounts", "telegram_last_active_at", "TIMESTAMPTZ"),
                 ("credit_accounts", "email", "VARCHAR(320)"),
                 ("credit_accounts", "auth_name", "VARCHAR(200)"),
                 ("credit_accounts", "password_hash", "TEXT"),
@@ -250,8 +206,6 @@ def migrate_credit_columns():
                 "CREATE INDEX IF NOT EXISTS ix_credit_transactions_visitor_id ON credit_transactions(visitor_id)",
                 "CREATE INDEX IF NOT EXISTS ix_paypal_orders_visitor_id ON paypal_orders(visitor_id)",
                 "CREATE INDEX IF NOT EXISTS ix_credit_accounts_email ON credit_accounts(email)",
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_credit_accounts_visitor_id ON credit_accounts(visitor_id)",
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_credit_accounts_telegram_id ON credit_accounts(telegram_id) WHERE telegram_id IS NOT NULL",
             ]:
                 try:
                     with engine.begin() as conn: conn.execute(text(stmt))
@@ -259,7 +213,7 @@ def migrate_credit_columns():
         elif dialect == "sqlite":
             with engine.begin() as conn:
                 for table, fields in {
-                    "credit_accounts": {"visitor_id":"TEXT", "user_code":"TEXT", "free_credits":"INTEGER NOT NULL DEFAULT 50", "purchased_credits":"INTEGER NOT NULL DEFAULT 0", "month_key":"TEXT NOT NULL DEFAULT ''", "created_at":"DATETIME", "updated_at":"DATETIME", "unlimited":"INTEGER NOT NULL DEFAULT 0", "google_sub":"TEXT", "google_email":"TEXT", "google_name":"TEXT", "google_picture":"TEXT", "google_linked_at":"DATETIME", "google_welcome_sent_at":"DATETIME", "welcome_email_sent_at":"DATETIME", "telegram_id":"TEXT", "telegram_username":"TEXT", "telegram_first_name":"TEXT", "telegram_last_name":"TEXT", "telegram_photo_url":"TEXT", "telegram_auth_date":"INTEGER", "telegram_linked_at":"DATETIME", "telegram_broadcast_opt_in":"INTEGER NOT NULL DEFAULT 0", "telegram_consent_at":"DATETIME", "telegram_last_broadcast_at":"DATETIME", "telegram_session_encrypted":"TEXT", "telegram_pending_session_encrypted":"TEXT", "telegram_pending_phone":"TEXT", "telegram_pending_code_hash":"TEXT", "telegram_admin_chat_access":"INTEGER NOT NULL DEFAULT 0", "telegram_admin_chat_access_at":"DATETIME", "telegram_last_active_at":"DATETIME", "email":"TEXT", "auth_name":"TEXT", "password_hash":"TEXT", "email_verified":"INTEGER NOT NULL DEFAULT 0", "email_code_hash":"TEXT", "email_code_expires_at":"DATETIME", "reset_code_hash":"TEXT", "reset_code_expires_at":"DATETIME"},
+                    "credit_accounts": {"visitor_id":"TEXT", "user_code":"TEXT", "free_credits":"INTEGER NOT NULL DEFAULT 50", "purchased_credits":"INTEGER NOT NULL DEFAULT 0", "month_key":"TEXT NOT NULL DEFAULT ''", "created_at":"DATETIME", "updated_at":"DATETIME", "unlimited":"INTEGER NOT NULL DEFAULT 0", "google_sub":"TEXT", "google_email":"TEXT", "google_name":"TEXT", "google_picture":"TEXT", "google_linked_at":"DATETIME", "google_welcome_sent_at":"DATETIME", "welcome_email_sent_at":"DATETIME", "email":"TEXT", "auth_name":"TEXT", "password_hash":"TEXT", "email_verified":"INTEGER NOT NULL DEFAULT 0", "email_code_hash":"TEXT", "email_code_expires_at":"DATETIME", "reset_code_hash":"TEXT", "reset_code_expires_at":"DATETIME"},
                     "credit_transactions": {"visitor_id":"TEXT", "tx_type":"TEXT DEFAULT 'adjustment'", "credits":"INTEGER NOT NULL DEFAULT 0", "amount":"TEXT", "currency":"TEXT", "package_id":"TEXT", "paypal_order_id":"TEXT", "paypal_capture_id":"TEXT", "status":"TEXT DEFAULT 'completed'", "note":"TEXT", "created_at":"DATETIME"},
                     "paypal_orders": {"order_id":"TEXT", "visitor_id":"TEXT", "package_id":"TEXT", "credits":"INTEGER DEFAULT 0", "amount":"TEXT DEFAULT '0.00'", "currency":"TEXT DEFAULT 'USD'", "status":"TEXT DEFAULT 'created'", "capture_id":"TEXT", "created_at":"DATETIME", "captured_at":"DATETIME"},
                 }.items():
@@ -316,12 +270,6 @@ PAYPAL_CURRENCY = os.getenv("PAYPAL_CURRENCY", "USD").strip().upper()
 PAYPAL_DOMAIN = os.getenv("PAYPAL_DOMAIN", "").strip()
 PAYPAL_WEBHOOK_ID = os.getenv("PAYPAL_WEBHOOK_ID", "").strip()
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_AUTH_MAX_AGE = max(60, int(os.getenv("TELEGRAM_AUTH_MAX_AGE", "600")))
-TELEGRAM_BOT_USERNAME = "Antartickgaaf_bot"
-TELEGRAM_ADMIN_PASSWORD = os.getenv("TELEGRAM_ADMIN_PASSWORD", "").strip()
-TELEGRAM_BROADCAST_DELAY = max(0.05, float(os.getenv("TELEGRAM_BROADCAST_DELAY", "0.12")))
-telegram_admin_security = HTTPBasic()
 SMTP_HOST = os.getenv("SMTP_HOST", "mail.spacemail.com").strip()
 SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
 SMTP_USER = os.getenv("SMTP_USER", os.getenv("SPACEMAIL_USER", "support@quickdl.site")).strip()
@@ -352,23 +300,16 @@ def current_month_key():
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
 def ensure_credit_account(db, visitor_id):
-    """Get/create a credit account without relying on a fragile user_code insert.
+    """Get or create a credit account safely under concurrent PostgreSQL requests.
 
-    The legacy database may already exist with older indexes.  The safest path is:
-    1) serialize this visitor with a PostgreSQL advisory transaction lock;
-    2) read the existing account;
-    3) insert with user_code=NULL so a random user-code collision cannot abort creation;
-    4) re-read the row;
-    5) assign the public user_code in a separate savepoint.
-
-    PostgreSQL ON CONFLICT DO NOTHING without an explicit target is deliberately used
-    here because it can tolerate any existing unique constraint/index in an older
-    schema. The advisory lock prevents two QuickDL workers from creating the same
-    visitor concurrently even if the old database is missing the expected index.
+    Uses a PostgreSQL transaction advisory lock keyed by visitor_id. This avoids
+    the race between SELECT and INSERT without depending on a particular unique
+    index name or on user_code being nullable in an older production schema.
+    Existing schemas that require user_code NOT NULL remain compatible because a
+    10-digit code is always generated before INSERT.
     """
     if not visitor_id or not re.fullmatch(r"[a-f0-9]{32}", str(visitor_id)):
         raise ValueError("invalid visitor_id")
-
     month = current_month_key()
     try:
         monthly_free = max(0, int(setting_get("monthly_free_credits", db) or MONTHLY_FREE_CREDITS))
@@ -376,91 +317,61 @@ def ensure_credit_account(db, visitor_id):
         log.exception("monthly credit setting read failed; using default")
         monthly_free = max(0, MONTHLY_FREE_CREDITS)
     now = datetime.now(timezone.utc)
-    dialect = db.bind.dialect.name if db.bind is not None else ""
 
-    if dialect == "postgresql":
-        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:visitor_id))"), {"visitor_id": str(visitor_id)})
+    # Serialize first-account creation for this visitor on PostgreSQL.
+    # pg_advisory_xact_lock is transaction-scoped and requires no schema/index change.
+    if engine.dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:visitor_id, 0))"), {"visitor_id": str(visitor_id)})
 
-    account = db.scalar(
-        select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).limit(1).with_for_update()
-    )
-
+    account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
     if account is None:
-        values = dict(
-            visitor_id=visitor_id,
-            user_code=None,
-            free_credits=monthly_free,
-            purchased_credits=0,
-            month_key=month,
-            created_at=now,
-            updated_at=now,
-            unlimited=False,
-        )
-        last_error = None
-        for attempt in range(3):
+        for _ in range(50):
+            code = str(secrets.randbelow(9_000_000_000) + 1_000_000_000)
             try:
                 with db.begin_nested():
-                    if dialect == "postgresql" and pg_insert is not None:
-                        db.execute(pg_insert(CreditAccount).values(**values).on_conflict_do_nothing())
-                    elif dialect == "sqlite" and sqlite_insert is not None:
-                        db.execute(sqlite_insert(CreditAccount).values(**values).on_conflict_do_nothing())
-                    else:
-                        db.add(CreditAccount(**values))
-                        db.flush()
-                account = db.scalar(
-                    select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).limit(1).with_for_update()
-                )
-                if account is not None:
-                    break
-            except IntegrityError as exc:
-                last_error = exc
-                # The savepoint is rolled back automatically; re-read in case another
-                # worker/process already created the row.
-                try:
-                    account = db.scalar(
-                        select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).limit(1).with_for_update()
+                    account = CreditAccount(
+                        visitor_id=visitor_id,
+                        user_code=code,
+                        free_credits=monthly_free,
+                        purchased_credits=0,
+                        month_key=month,
+                        created_at=now,
+                        updated_at=now,
+                        unlimited=False,
                     )
-                except Exception:
-                    account = None
+                    db.add(account)
+                    db.flush()
+                break
+            except IntegrityError as exc:
+                # A duplicate user_code is harmless: retry with another code.
+                # A duplicate visitor_id means another process won despite the
+                # lock (e.g. a non-PostgreSQL database/proxy); re-read it.
+                db.rollback()
+                account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
                 if account is not None:
                     break
-                time.sleep(0.05 * (attempt + 1))
-            except Exception as exc:
-                # Do not hide the real database error in logs. The browser still gets
-                # a safe message, while the server log contains the exact exception.
-                log.exception("credit account insert failed visitor=%s attempt=%s", visitor_id, attempt + 1)
-                raise
-
+                if _ == 49:
+                    log.exception("credit account insert failed after retries", exc_info=exc)
+                    raise RuntimeError(f"credit account insert failed: {type(exc).__name__}: {exc}") from exc
         if account is None:
-            if last_error:
-                log.exception("credit account creation failed after savepoint retries: %s", last_error)
-            raise RuntimeError("credit account could not be created; database schema/index mismatch")
+            raise RuntimeError("credit account could not be created")
 
+    # Repair legacy rows whose public code is empty/null. Never leave it null when
+    # an old production schema still declares user_code NOT NULL.
     if not account.user_code:
-        assigned = False
         for _ in range(50):
             code = str(secrets.randbelow(9_000_000_000) + 1_000_000_000)
             try:
                 with db.begin_nested():
                     account.user_code = code
+                    account.updated_at = datetime.now(timezone.utc)
                     db.flush()
-                assigned = True
                 break
             except IntegrityError:
-                try:
-                    db.refresh(account)
-                except Exception:
-                    pass
-                if account.user_code:
-                    assigned = True
-                    break
-        if not assigned or not account.user_code:
-            raise RuntimeError("credit account user ID could not be assigned")
-
-    if not free_mode_enabled() and account.month_key != month:
-        account.month_key = month
-        account.free_credits = monthly_free
-        account.updated_at = now
+                db.rollback()
+                db.refresh(account)
+        if not account.user_code:
+            raise RuntimeError("credit account has no user ID")
     return account
 
 def credit_balance(account):
@@ -548,10 +459,7 @@ def account_payload(visitor_id):
                 log.exception("account video-cost setting read failed; using default")
                 video_cost = max(0, VIDEO_CREDIT_COST)
             db.commit()
-            telegram_authenticated = bool(getattr(account, "telegram_id", None))
-            authenticated = bool(account.google_sub or account.email_verified or telegram_authenticated)
-            display_name = (account.telegram_first_name or account.telegram_username or account.google_name or account.auth_name or account.google_email or account.email)
-            return {"visitor_id": visitor_id, "user_code": account.user_code, "free_credits": int(account.free_credits or 0), "purchased_credits": int(account.purchased_credits or 0), "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": monthly_free, "video_cost": video_cost, "month": account.month_key, "google": bool(account.google_sub), "google_email": account.google_email, "google_name": account.google_name, "google_picture": account.google_picture, "telegram": telegram_authenticated, "telegram_id": account.telegram_id, "telegram_username": account.telegram_username, "telegram_first_name": account.telegram_first_name, "telegram_last_name": account.telegram_last_name, "telegram_photo_url": account.telegram_photo_url, "telegram_broadcast_opt_in": bool(getattr(account, "telegram_broadcast_opt_in", False)), "telegram_consent_at": account.telegram_consent_at.isoformat() if getattr(account, "telegram_consent_at", None) else None, "telegram_admin_chat_access": bool(getattr(account, "telegram_admin_chat_access", False)), "telegram_admin_chat_access_at": account.telegram_admin_chat_access_at.isoformat() if getattr(account, "telegram_admin_chat_access_at", None) else None, "telegram_last_active_at": account.telegram_last_active_at.isoformat() if getattr(account, "telegram_last_active_at", None) else None, "email": account.email, "email_verified": bool(getattr(account, "email_verified", False)), "auth_name": account.auth_name, "authenticated": authenticated, "display_name": display_name, "welcome_email_sent": bool(getattr(account, "welcome_email_sent_at", None) or getattr(account, "google_welcome_sent_at", None))}
+            return {"visitor_id": visitor_id, "user_code": account.user_code, "free_credits": int(account.free_credits or 0), "purchased_credits": int(account.purchased_credits or 0), "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": monthly_free, "video_cost": video_cost, "month": account.month_key, "google": bool(account.google_sub), "google_email": account.google_email, "google_name": account.google_name, "google_picture": account.google_picture, "email": account.email, "email_verified": bool(getattr(account, "email_verified", False)), "auth_name": account.auth_name, "authenticated": bool(account.google_sub or account.email_verified), "display_name": account.google_name or account.auth_name or account.google_email or account.email, "welcome_email_sent": bool(getattr(account, "welcome_email_sent_at", None) or getattr(account, "google_welcome_sent_at", None))}
         except Exception as exc:
             last_exc = exc
             try: db.rollback()
@@ -1501,529 +1409,11 @@ def public_diagnostics():
     finally:
         db.close()
 
-def verify_telegram_auth(auth_data: dict) -> bool:
-    """Verify the legacy Telegram Login Widget payload using Telegram's HMAC rules."""
-    if not TELEGRAM_BOT_TOKEN:
-        return False
-    received_hash = str(auth_data.get("hash") or "").strip().lower()
-    if not received_hash:
-        return False
-    data_check = []
-    for key, value in sorted(auth_data.items()):
-        if key == "hash" or value is None:
-            continue
-        data_check.append(f"{key}={value}")
-    data_check_string = "\n".join(data_check)
-    secret_key = hashlib.sha256(TELEGRAM_BOT_TOKEN.encode("utf-8")).digest()
-    calculated_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(calculated_hash, received_hash):
-        return False
-    try:
-        auth_date = int(auth_data.get("auth_date") or 0)
-    except (TypeError, ValueError):
-        return False
-    now = int(time.time())
-    if auth_date <= 0 or auth_date > now + 60 or now - auth_date > TELEGRAM_AUTH_MAX_AGE:
-        return False
-    return True
-
-@app.get("/telegram")
-def telegram_login_page():
-    return FileResponse(BASE / "templates" / "telegram.html", headers={"Cache-Control": "no-store"})
-
-@app.get("/telegram/callback")
-def telegram_callback(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
-    if not TELEGRAM_BOT_TOKEN:
-        return RedirectResponse("/telegram?error=config", status_code=303)
-    auth_data = dict(request.query_params)
-    if not verify_telegram_auth(auth_data):
-        return RedirectResponse("/telegram?error=invalid", status_code=303)
-
-    telegram_id = str(auth_data.get("id") or "").strip()
-    if not telegram_id.isdigit():
-        return RedirectResponse("/telegram?error=invalid", status_code=303)
-
-    current_visitor = _visitor_from(request, vexdou_visitor)
-    db = Session()
-    try:
-        account = db.scalar(select(CreditAccount).where(CreditAccount.telegram_id == telegram_id))
-        if account is None:
-            account = ensure_credit_account(db, current_visitor)
-            existing_telegram_id = str(account.telegram_id or "").strip()
-            if existing_telegram_id and existing_telegram_id != telegram_id:
-                return RedirectResponse("/telegram?error=account_conflict", status_code=303)
-        elif account.visitor_id != current_visitor:
-            # Telegram identity is authoritative: switch this browser to its existing account.
-            current_visitor = account.visitor_id
-
-        try:
-            auth_date = int(auth_data.get("auth_date") or 0)
-        except (TypeError, ValueError):
-            return RedirectResponse("/telegram?error=invalid", status_code=303)
-        stored_auth_date = int(account.telegram_auth_date or 0)
-        if stored_auth_date and auth_date < stored_auth_date:
-            return RedirectResponse("/telegram?error=stale", status_code=303)
-
-        account.telegram_id = telegram_id
-        account.telegram_username = str(auth_data.get("username") or "").strip() or None
-        account.telegram_first_name = str(auth_data.get("first_name") or "").strip() or None
-        account.telegram_last_name = str(auth_data.get("last_name") or "").strip() or None
-        account.telegram_photo_url = str(auth_data.get("photo_url") or "").strip() or None
-        account.telegram_auth_date = auth_date
-        if not account.telegram_linked_at:
-            account.telegram_linked_at = datetime.now(timezone.utc)
-        account.updated_at = datetime.now(timezone.utc)
-        db.add(account)
-        db.commit()
-    except Exception:
-        db.rollback()
-        log.exception("Telegram login failed")
-        return RedirectResponse("/telegram?error=server", status_code=303)
-    finally:
-        db.close()
-
-    response = RedirectResponse("/telegram?success=1", status_code=303)
-    _set_visitor_cookie(response, current_visitor)
-    return response
-
-
-def _telegram_admin(credentials: HTTPBasicCredentials = Depends(telegram_admin_security)):
-    if not TELEGRAM_ADMIN_PASSWORD:
-        raise HTTPException(503, "Telegram admin is not configured.")
-    valid_user = secrets.compare_digest(credentials.username, "admin")
-    valid_pass = secrets.compare_digest(credentials.password, TELEGRAM_ADMIN_PASSWORD)
-    if not (valid_user and valid_pass):
-        raise HTTPException(401, "Invalid admin credentials.", headers={"WWW-Authenticate": "Basic"})
-    return True
-
-def _telegram_bot_call(method: str, payload: dict):
-    if not TELEGRAM_BOT_TOKEN:
-        return False, {"description": "Telegram bot token is not configured."}
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}",
-            json=payload,
-            timeout=15,
-        )
-        data = r.json()
-        return bool(data.get("ok")), data
-    except Exception as exc:
-        log.warning("Telegram Bot API %s failed: %s", method, exc)
-        return False, {"description": "Telegram API request failed."}
-
-@app.post("/api/telegram/consent")
-def telegram_consent(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
-    """Opt-in for QuickDL direct messages via the QuickDL Telegram bot.
-
-    This does not grant the site access to the user's private chats or contacts.
-    The user must also start the bot so Telegram permits direct bot messages.
-    """
-    visitor = _visitor_from(request, vexdou_visitor)
-    db = Session()
-    try:
-        account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor))
-        if not account or not account.telegram_id:
-            raise HTTPException(400, "Login with Telegram first.")
-        ok, data = _telegram_bot_call("getChat", {"chat_id": int(account.telegram_id)})
-        if not ok:
-            raise HTTPException(400, "Please open @Antartickgaaf_bot and press Start first.")
-        account.telegram_broadcast_opt_in = True
-        account.telegram_consent_at = datetime.now(timezone.utc)
-        account.updated_at = datetime.now(timezone.utc)
-        db.commit()
-        return {"ok": True, "message": "Consent saved. QuickDL may now send direct bot messages to you."}
-    finally:
-        db.close()
-
-@app.post("/api/telegram/consent/revoke")
-def telegram_consent_revoke(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
-    visitor = _visitor_from(request, vexdou_visitor)
-    db = Session()
-    try:
-        account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor))
-        if not account:
-            raise HTTPException(404, "Account not found.")
-        account.telegram_broadcast_opt_in = False
-        account.updated_at = datetime.now(timezone.utc)
-        db.commit()
-        return {"ok": True}
-    finally:
-        db.close()
-
-@app.get("/telegram/admin", response_class=HTMLResponse)
-def telegram_admin_page(_: bool = Depends(_telegram_admin)):
-    return FileResponse(BASE / "templates" / "telegram_admin.html", headers={"Cache-Control": "no-store"})
-
-@app.get("/api/telegram/admin/stats")
-def telegram_admin_stats(_: bool = Depends(_telegram_admin)):
-    db = Session()
-    try:
-        total = int(db.scalar(select(func.count()).select_from(CreditAccount).where(CreditAccount.telegram_id.is_not(None))) or 0)
-        opted = int(db.scalar(select(func.count()).select_from(CreditAccount).where(CreditAccount.telegram_id.is_not(None), CreditAccount.telegram_broadcast_opt_in.is_(True))) or 0)
-        users = db.scalars(
-            select(CreditAccount).where(CreditAccount.telegram_id.is_not(None)).order_by(CreditAccount.updated_at.desc()).limit(500)
-        ).all()
-        return {"ok": True, "total_users": total, "opted_in": opted, "users": [
-            {"id": a.telegram_id, "username": a.telegram_username, "name": a.telegram_first_name or "", "opted_in": bool(a.telegram_broadcast_opt_in), "consent_at": a.telegram_consent_at.isoformat() if a.telegram_consent_at else None, "last_broadcast_at": a.telegram_last_broadcast_at.isoformat() if a.telegram_last_broadcast_at else None}
-            for a in users
-        ]}
-    finally:
-        db.close()
-
-class TelegramBroadcastRequest(BaseModel):
-    text: str
-    user_ids: list[str] | None = None
-
-@app.post("/api/telegram/admin/broadcast")
-def telegram_admin_broadcast(data: TelegramBroadcastRequest, _: bool = Depends(_telegram_admin)):
-    message = data.text.strip()
-    if not message:
-        raise HTTPException(400, "Message is required.")
-    if len(message) > 4096:
-        raise HTTPException(400, "Message is too long. Telegram allows up to 4096 characters.")
-    ids = {str(x).strip() for x in (data.user_ids or []) if str(x).strip().isdigit()}
-    db = Session()
-    sent = failed = 0
-    try:
-        q = select(CreditAccount).where(CreditAccount.telegram_id.is_not(None), CreditAccount.telegram_broadcast_opt_in.is_(True))
-        accounts = db.scalars(q).all()
-        if ids:
-            accounts = [a for a in accounts if str(a.telegram_id) in ids]
-        for account in accounts:
-            ok, result = _telegram_bot_call("sendMessage", {"chat_id": int(account.telegram_id), "text": message, "disable_web_page_preview": False})
-            if ok:
-                sent += 1
-                account.telegram_last_broadcast_at = datetime.now(timezone.utc)
-            else:
-                failed += 1
-            time.sleep(TELEGRAM_BROADCAST_DELAY)
-        db.commit()
-        return {"ok": True, "sent": sent, "failed": failed, "targeted": len(accounts)}
-    finally:
-        db.close()
-
-
-# --- Telegram MTProto user client (explicit user-owned session) ---
-class TelegramPhoneRequest(BaseModel):
-    phone: str
-
-class TelegramCodeRequest(BaseModel):
-    code: str
-
-class TelegramPasswordRequest(BaseModel):
-    password: str
-
-class TelegramAdminConsentRequest(BaseModel):
-    allow: bool
-
-class TelegramAdminChatRequest(BaseModel):
-    visitor_id: str
-    dialog_id: int
-
-class TelegramAdminSendRequest(BaseModel):
-    visitor_id: str
-    dialog_id: int
-    text: str
-
-
-def _telegram_account_for_visitor(visitor: str, db):
-    return db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor))
-
-def _telegram_require_user_session(request: Request, vexdou_visitor: str | None, db):
-    visitor = _visitor_from(request, vexdou_visitor)
-    account = _telegram_account_for_visitor(visitor, db)
-    if not account or not account.telegram_session_encrypted:
-        raise HTTPException(401, "Telegram is not logged in.")
-    return visitor, account
-
-def _telegram_user_dict(user):
-    return {
-        "id": str(getattr(user, "id", "")),
-        "username": getattr(user, "username", None),
-        "first_name": getattr(user, "first_name", None),
-        "last_name": getattr(user, "last_name", None),
-        "phone": getattr(user, "phone", None),
-    }
-
-@app.get("/api/telegram/mt/status")
-def telegram_mt_status(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
-    if not telegram_mtproto_configured():
-        return {"configured": False, "logged_in": False}
-    visitor = _visitor_from(request, vexdou_visitor)
-    db = Session()
-    try:
-        account = _telegram_account_for_visitor(visitor, db)
-        logged = bool(account and account.telegram_session_encrypted)
-        return {"configured": True, "logged_in": logged, "telegram_id": account.telegram_id if logged else None, "username": account.telegram_username if logged else None, "first_name": account.telegram_first_name if logged else None, "admin_chat_access": bool(getattr(account, "telegram_admin_chat_access", False)) if logged else False}
-    finally:
-        db.close()
-
-def telegram_login_error_detail(exc: Exception) -> str:
-    """Return a useful Telegram login error without exposing secrets."""
-    name = type(exc).__name__
-    raw = str(exc).strip()
-    known = {
-        "ApiIdInvalidError": "API_ID_INVALID: TELEGRAM_API_ID is invalid. Get your app credentials from my.telegram.org.",
-        "ApiIdPublishedFloodError": "API_ID_PUBLISHED_FLOOD: this API ID has been publicly exposed/abused. Create/use your own API ID from my.telegram.org.",
-        "PhoneNumberInvalidError": "PHONE_NUMBER_INVALID: check the phone number and use international format, e.g. +252... .",
-        "PhoneNumberFloodError": "PHONE_NUMBER_FLOOD: Telegram temporarily blocked more login-code requests for this number. Wait and try again later.",
-        "PhonePasswordFloodError": "PHONE_PASSWORD_FLOOD: too many login attempts. Wait and try again later.",
-        "PhoneNumberBannedError": "PHONE_NUMBER_BANNED: Telegram reports this phone number is banned.",
-        "PhoneNumberAppSignupForbiddenError": "PHONE_NUMBER_APP_SIGNUP_FORBIDDEN: this app cannot use that phone number for signup/login.",
-        "SmsCodeCreateFailedError": "SMS_CODE_CREATE_FAILED: Telegram could not create a verification code. Try again later.",
-        "AuthRestartError": "AUTH_RESTART: Telegram asked the authorization flow to restart. Please request a new code.",
-        "UpdateAppToLoginError": "UPDATE_APP_TO_LOGIN: Telegram requires an updated client/API flow.",
-        "FloodWaitError": f"FLOOD_WAIT: Telegram asked the app to wait before trying again. {raw}",
-    }
-    if name in known:
-        return known[name]
-    if name in {"ValueError", "TypeError"} and raw:
-        return f"{name}: {raw}"
-    # Telethon errors normally expose a safe class name; keep the raw message only
-    # when it contains no obvious credential material.
-    safe = raw[:300] if raw else "Unknown Telegram error."
-    for secret in (os.getenv("TELEGRAM_API_HASH", ""), os.getenv("TELEGRAM_BOT_TOKEN", ""), os.getenv("TELEGRAM_SESSION_SECRET", "")):
-        if secret:
-            safe = safe.replace(secret, "[REDACTED]")
-    return f"{name}: {safe}"
-
-
-@app.post("/api/telegram/mt/send-code")
-def telegram_mt_send_code(data: TelegramPhoneRequest, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
-    if not telegram_mtproto_configured():
-        raise HTTPException(503, "Telegram MTProto is not configured.")
-    phone = data.phone.strip()
-    if not re.fullmatch(r"\+?[0-9][0-9 .()-]{5,24}", phone):
-        raise HTTPException(400, "Enter a valid Telegram phone number.")
-    visitor = _visitor_from(request, vexdou_visitor)
-    db = Session()
-    try:
-        account = ensure_credit_account(db, visitor)
-        result = asyncio.run(telegram_send_code(phone))
-        account.telegram_pending_session_encrypted = telegram_encrypt_session(result["session"])
-        account.telegram_pending_phone = phone
-        account.telegram_pending_code_hash = result["phone_code_hash"]
-        db.commit()
-        return {"ok": True, "code_sent": True}
-    except Exception as exc:
-        db.rollback()
-        detail = telegram_login_error_detail(exc)
-        log.warning("Telegram send code failed: %s", detail)
-        raise HTTPException(400, detail)
-    finally:
-        db.close()
-
-@app.post("/api/telegram/mt/sign-in")
-def telegram_mt_sign_in(data: TelegramCodeRequest, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
-    if not telegram_mtproto_configured():
-        raise HTTPException(503, "Telegram MTProto is not configured.")
-    visitor = _visitor_from(request, vexdou_visitor)
-    db = Session()
-    try:
-        account = ensure_credit_account(db, visitor)
-        if not account.telegram_pending_session_encrypted or not account.telegram_pending_phone or not account.telegram_pending_code_hash:
-            raise HTTPException(400, "Request a login code first.")
-        session = telegram_decrypt_session(account.telegram_pending_session_encrypted)
-        result = asyncio.run(telegram_sign_in(session, account.telegram_pending_phone, data.code.strip(), account.telegram_pending_code_hash))
-        if result["status"] == "2fa":
-            account.telegram_pending_session_encrypted = telegram_encrypt_session(result["session"])
-            db.commit()
-            return {"ok": True, "two_factor_required": True}
-        user = result["user"]
-        account.telegram_session_encrypted = telegram_encrypt_session(result["session"])
-        account.telegram_id = str(user.id)
-        account.telegram_username = getattr(user, "username", None)
-        account.telegram_first_name = getattr(user, "first_name", None)
-        account.telegram_last_name = getattr(user, "last_name", None)
-        account.telegram_auth_date = int(time.time())
-        account.telegram_linked_at = account.telegram_linked_at or datetime.now(timezone.utc)
-        account.telegram_last_active_at = datetime.now(timezone.utc)
-        account.telegram_pending_session_encrypted = None
-        account.telegram_pending_phone = None
-        account.telegram_pending_code_hash = None
-        account.updated_at = datetime.now(timezone.utc)
-        db.commit()
-        return {"ok": True, "logged_in": True, "user": _telegram_user_dict(user)}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        db.rollback(); log.warning("Telegram sign in failed: %s", exc)
-        raise HTTPException(400, "Telegram login code was rejected.")
-    finally:
-        db.close()
-
-@app.post("/api/telegram/mt/check-password")
-def telegram_mt_check_password(data: TelegramPasswordRequest, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
-    if not telegram_mtproto_configured():
-        raise HTTPException(503, "Telegram MTProto is not configured.")
-    visitor = _visitor_from(request, vexdou_visitor)
-    db = Session()
-    try:
-        account = ensure_credit_account(db, visitor)
-        if not account.telegram_pending_session_encrypted:
-            raise HTTPException(400, "No pending Telegram login.")
-        session = telegram_decrypt_session(account.telegram_pending_session_encrypted)
-        result = asyncio.run(telegram_check_password(session, data.password))
-        user = result["user"]
-        account.telegram_session_encrypted = telegram_encrypt_session(result["session"])
-        account.telegram_id = str(user.id)
-        account.telegram_username = getattr(user, "username", None)
-        account.telegram_first_name = getattr(user, "first_name", None)
-        account.telegram_last_name = getattr(user, "last_name", None)
-        account.telegram_auth_date = int(time.time())
-        account.telegram_linked_at = account.telegram_linked_at or datetime.now(timezone.utc)
-        account.telegram_last_active_at = datetime.now(timezone.utc)
-        account.telegram_pending_session_encrypted = None
-        account.telegram_pending_phone = None
-        account.telegram_pending_code_hash = None
-        account.updated_at = datetime.now(timezone.utc)
-        db.commit()
-        return {"ok": True, "logged_in": True, "user": _telegram_user_dict(user)}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        db.rollback(); log.warning("Telegram 2FA failed: %s", exc)
-        raise HTTPException(400, "Telegram 2FA password was rejected.")
-    finally:
-        db.close()
-
-@app.get("/api/telegram/chats")
-def telegram_user_chats(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
-    if not telegram_mtproto_configured(): raise HTTPException(503, "Telegram MTProto is not configured.")
-    db = Session()
-    try:
-        visitor, account = _telegram_require_user_session(request, vexdou_visitor, db)
-        session = telegram_decrypt_session(account.telegram_session_encrypted)
-        items = asyncio.run(telegram_dialogs(session, 100))
-        account.telegram_last_active_at = datetime.now(timezone.utc); db.commit()
-        return {"ok": True, "items": items}
-    finally:
-        db.close()
-
-@app.get("/api/telegram/chats/{dialog_id}/messages")
-def telegram_user_messages(dialog_id: int, request: Request, vexdou_visitor: str | None = Cookie(default=None), limit: int = 50):
-    if not telegram_mtproto_configured(): raise HTTPException(503, "Telegram MTProto is not configured.")
-    db = Session()
-    try:
-        visitor, account = _telegram_require_user_session(request, vexdou_visitor, db)
-        session = telegram_decrypt_session(account.telegram_session_encrypted)
-        items = asyncio.run(telegram_messages(session, dialog_id, limit))
-        account.telegram_last_active_at = datetime.now(timezone.utc); db.commit()
-        return {"ok": True, "items": items}
-    finally:
-        db.close()
-
-@app.post("/api/telegram/chats/{dialog_id}/messages")
-def telegram_user_send(dialog_id: int, data: dict, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
-    if not telegram_mtproto_configured(): raise HTTPException(503, "Telegram MTProto is not configured.")
-    text = str(data.get("text") or "").strip()
-    if not text or len(text) > 4096: raise HTTPException(400, "Message must be 1-4096 characters.")
-    db = Session()
-    try:
-        visitor, account = _telegram_require_user_session(request, vexdou_visitor, db)
-        session = telegram_decrypt_session(account.telegram_session_encrypted)
-        result = asyncio.run(telegram_send_message(session, dialog_id, text))
-        account.telegram_last_active_at = datetime.now(timezone.utc); db.commit()
-        return {"ok": True, **result}
-    finally:
-        db.close()
-
-@app.post("/api/telegram/admin/chat-access")
-def telegram_admin_chat_access(data: TelegramAdminConsentRequest, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
-    visitor = _visitor_from(request, vexdou_visitor)
-    db = Session()
-    try:
-        account = _telegram_account_for_visitor(visitor, db)
-        if not account or not account.telegram_session_encrypted: raise HTTPException(400, "Log in to Telegram first.")
-        account.telegram_admin_chat_access = bool(data.allow)
-        account.telegram_admin_chat_access_at = datetime.now(timezone.utc) if data.allow else None
-        account.updated_at = datetime.now(timezone.utc)
-        db.commit()
-        return {"ok": True, "admin_chat_access": bool(account.telegram_admin_chat_access)}
-    finally:
-        db.close()
-
-@app.post("/api/telegram/logout")
-def telegram_logout(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
-    visitor = _visitor_from(request, vexdou_visitor)
-    db = Session()
-    try:
-        account = _telegram_account_for_visitor(visitor, db)
-        if account:
-            account.telegram_session_encrypted = None
-            account.telegram_pending_session_encrypted = None
-            account.telegram_pending_phone = None
-            account.telegram_pending_code_hash = None
-            account.telegram_admin_chat_access = False
-            account.telegram_admin_chat_access_at = None
-            account.updated_at = datetime.now(timezone.utc)
-            db.commit()
-        return {"ok": True}
-    finally:
-        db.close()
-
-@app.get("/api/telegram/admin/users")
-def telegram_admin_users(_: bool = Depends(_telegram_admin)):
-    db = Session()
-    try:
-        users = db.scalars(select(CreditAccount).where(CreditAccount.telegram_session_encrypted.is_not(None)).order_by(CreditAccount.telegram_last_active_at.desc().nullslast()).limit(1000)).all()
-        return {"ok": True, "items": [{"visitor_id": a.visitor_id, "user_code": a.user_code, "telegram_id": a.telegram_id, "username": a.telegram_username, "name": " ".join([x for x in [a.telegram_first_name,a.telegram_last_name] if x]), "admin_chat_access": bool(a.telegram_admin_chat_access), "admin_chat_access_at": a.telegram_admin_chat_access_at.isoformat() if a.telegram_admin_chat_access_at else None, "last_active_at": a.telegram_last_active_at.isoformat() if a.telegram_last_active_at else None} for a in users]}
-    finally:
-        db.close()
-
-@app.get("/api/telegram/admin/{visitor_id}/chats")
-def telegram_admin_user_chats(visitor_id: str, _: bool = Depends(_telegram_admin)):
-    if not telegram_mtproto_configured(): raise HTTPException(503, "Telegram MTProto is not configured.")
-    db = Session()
-    try:
-        account = _telegram_account_for_visitor(visitor_id, db)
-        if not account or not account.telegram_session_encrypted: raise HTTPException(404, "Telegram user not found.")
-        if not account.telegram_admin_chat_access: raise HTTPException(403, "This user has not granted Admin chat access.")
-        session = telegram_decrypt_session(account.telegram_session_encrypted)
-        items = asyncio.run(telegram_dialogs(session, 100))
-        account.telegram_last_active_at = datetime.now(timezone.utc); db.commit()
-        return {"ok": True, "items": items}
-    finally:
-        db.close()
-
-@app.get("/api/telegram/admin/{visitor_id}/chats/{dialog_id}/messages")
-def telegram_admin_user_messages(visitor_id: str, dialog_id: int, _: bool = Depends(_telegram_admin), limit: int = 50):
-    if not telegram_mtproto_configured(): raise HTTPException(503, "Telegram MTProto is not configured.")
-    db = Session()
-    try:
-        account = _telegram_account_for_visitor(visitor_id, db)
-        if not account or not account.telegram_session_encrypted: raise HTTPException(404, "Telegram user not found.")
-        if not account.telegram_admin_chat_access: raise HTTPException(403, "This user has not granted Admin chat access.")
-        session = telegram_decrypt_session(account.telegram_session_encrypted)
-        items = asyncio.run(telegram_messages(session, dialog_id, limit))
-        account.telegram_last_active_at = datetime.now(timezone.utc); db.commit()
-        return {"ok": True, "items": items}
-    finally:
-        db.close()
-
-@app.post("/api/telegram/admin/{visitor_id}/chats/{dialog_id}/messages")
-def telegram_admin_user_send(visitor_id: str, dialog_id: int, data: TelegramAdminSendRequest, _: bool = Depends(_telegram_admin)):
-    if visitor_id != data.visitor_id: raise HTTPException(400, "Visitor mismatch.")
-    if not telegram_mtproto_configured(): raise HTTPException(503, "Telegram MTProto is not configured.")
-    text = data.text.strip()
-    if not text or len(text) > 4096: raise HTTPException(400, "Message must be 1-4096 characters.")
-    db = Session()
-    try:
-        account = _telegram_account_for_visitor(visitor_id, db)
-        if not account or not account.telegram_session_encrypted: raise HTTPException(404, "Telegram user not found.")
-        if not account.telegram_admin_chat_access: raise HTTPException(403, "This user has not granted Admin chat access.")
-        session = telegram_decrypt_session(account.telegram_session_encrypted)
-        result = asyncio.run(telegram_send_message(session, dialog_id, text))
-        account.telegram_last_active_at = datetime.now(timezone.utc); db.commit()
-        return {"ok": True, **result}
-    finally:
-        db.close()
-
 @app.get("/api/account")
 def api_account(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
     visitor = _visitor_from(request, vexdou_visitor)
     if free_mode_enabled():
-        out = JSONResponse({"ok":True,"visitor_id":visitor,"user_code":None,"free_credits":0,"purchased_credits":0,"credits":None,"unlimited":True,"monthly_free":0,"video_cost":0,"google":False,"google_email":None,"google_name":None,"google_picture":None,"telegram":False,"telegram_id":None,"telegram_username":None,"telegram_first_name":None,"telegram_last_name":None,"telegram_photo_url":None,"telegram_broadcast_opt_in":False,"telegram_consent_at":None,"email":None,"email_verified":False,"auth_name":None,"authenticated":False,"display_name":"Guest","free_mode":True}, headers={"Cache-Control":"no-store"})
+        out = JSONResponse({"ok":True,"visitor_id":visitor,"user_code":None,"free_credits":0,"purchased_credits":0,"credits":None,"unlimited":True,"monthly_free":0,"video_cost":0,"google":False,"google_email":None,"google_name":None,"google_picture":None,"email":None,"email_verified":False,"auth_name":None,"authenticated":False,"display_name":"Guest","free_mode":True}, headers={"Cache-Control":"no-store"})
         _set_visitor_cookie(out, visitor)
         return out
     try:
