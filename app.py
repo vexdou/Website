@@ -20,6 +20,14 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy import create_engine, String, Text, Integer, DateTime, select, update, delete, func
 from sqlalchemy.exc import IntegrityError, OperationalError
+try:
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+except Exception:
+    pg_insert = None
+try:
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+except Exception:
+    sqlite_insert = None
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 try:
     from google.oauth2 import id_token as google_id_token
@@ -242,6 +250,7 @@ def migrate_credit_columns():
                 "CREATE INDEX IF NOT EXISTS ix_credit_transactions_visitor_id ON credit_transactions(visitor_id)",
                 "CREATE INDEX IF NOT EXISTS ix_paypal_orders_visitor_id ON paypal_orders(visitor_id)",
                 "CREATE INDEX IF NOT EXISTS ix_credit_accounts_email ON credit_accounts(email)",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_credit_accounts_visitor_id ON credit_accounts(visitor_id)",
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_credit_accounts_telegram_id ON credit_accounts(telegram_id) WHERE telegram_id IS NOT NULL",
             ]:
                 try:
@@ -343,18 +352,18 @@ def current_month_key():
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
 def ensure_credit_account(db, visitor_id):
-    """Get or create a credit account safely under concurrent Render requests.
+    """Get/create the visitor credit row without a first-request race.
 
-    The account is the source of truth for the 50 monthly free credits. Creation
-    uses a SAVEPOINT and then re-reads the winner, so a simultaneous first request
-    cannot poison the SQLAlchemy session or turn into a false credit-initialization
-    error.
+    Telegram's login page can be opened while QuickDL also calls /api/account.
+    Those requests may arrive at the same time for a brand-new visitor. The old
+    SELECT-then-INSERT pattern could make the losing transaction hit a unique
+    constraint and incorrectly raise ``credit account creation race could not be
+    resolved``. PostgreSQL's INSERT ... ON CONFLICT DO NOTHING makes creation
+    atomic; after the insert we always re-read the winning row.
     """
     if not visitor_id or not re.fullmatch(r"[a-f0-9]{32}", str(visitor_id)):
         raise ValueError("invalid visitor_id")
     month = current_month_key()
-    # Account creation remains usable even if an old deployment has a partially
-    # migrated admin_settings table. Fall back to the environment default.
     try:
         monthly_free = max(0, int(setting_get("monthly_free_credits", db) or MONTHLY_FREE_CREDITS))
     except Exception:
@@ -362,19 +371,44 @@ def ensure_credit_account(db, visitor_id):
         monthly_free = max(0, MONTHLY_FREE_CREDITS)
     now = datetime.now(timezone.utc)
 
+    # Fast path: the row already exists. Lock it before changing monthly credits.
     account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
     if account is None:
-        for _ in range(20):
+        for _ in range(30):
             code = str(secrets.randbelow(9_000_000_000) + 1_000_000_000)
+            values = dict(visitor_id=visitor_id, user_code=code,
+                          free_credits=monthly_free, purchased_credits=0,
+                          month_key=month, created_at=now, updated_at=now, unlimited=False)
             try:
-                with db.begin_nested():
-                    account = CreditAccount(visitor_id=visitor_id, user_code=code,
-                        free_credits=monthly_free, purchased_credits=0, month_key=month,
-                        created_at=now, updated_at=now, unlimited=False)
-                    db.add(account)
-                    db.flush()
-                break
+                if db.bind.dialect.name == "postgresql" and pg_insert is not None:
+                    stmt = pg_insert(CreditAccount).values(**values).on_conflict_do_nothing()
+                elif db.bind.dialect.name == "sqlite" and sqlite_insert is not None:
+                    stmt = sqlite_insert(CreditAccount).values(**values).on_conflict_do_nothing()
+                else:
+                    # Other dialects are not expected in production, but keep the
+                    # old nested-transaction behavior as a compatibility fallback.
+                    with db.begin_nested():
+                        db.add(CreditAccount(**values))
+                        db.flush()
+                    stmt = None
+                if stmt is not None:
+                    db.execute(stmt)
+
+                account = db.scalar(
+                    select(CreditAccount)
+                    .where(CreditAccount.visitor_id == visitor_id)
+                    .with_for_update()
+                )
+                if account is not None:
+                    break
             except IntegrityError:
+                # A generated user_code may collide with an existing row. The
+                # next attempt generates another code; the transaction stays usable
+                # because PostgreSQL ON CONFLICT is used for the normal path.
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
                 account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
                 if account is not None:
                     break
@@ -382,35 +416,26 @@ def ensure_credit_account(db, visitor_id):
             raise RuntimeError("credit account creation race could not be resolved")
 
     if not account.user_code:
-        for _ in range(20):
+        for _ in range(30):
             code = str(secrets.randbelow(9_000_000_000) + 1_000_000_000)
             try:
-                with db.begin_nested():
-                    account.user_code = code
-                    db.flush()
+                account.user_code = code
+                db.flush()
                 break
             except IntegrityError:
-                db.refresh(account)
-        if not account.user_code:
+                db.rollback()
+                account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor_id).with_for_update())
+                if account and account.user_code:
+                    break
+        if not account or not account.user_code:
             raise RuntimeError("credit account has no user ID")
 
-    month_renewed = bool(account.month_key and account.month_key != month)
-    if account.month_key != month:
-        account.free_credits = monthly_free
-        account.month_key = month
-    if account.free_credits is None:
-        account.free_credits = monthly_free
-    if account.purchased_credits is None:
-        account.purchased_credits = 0
-    account.updated_at = now
-    db.flush()
-    if month_renewed:
-        try:
-            queue_user_email(visitor_id, "QuickDL monthly credits renewed", "Your monthly credits are ready", f"Your monthly free allowance has been renewed. You now have {monthly_free} free credits available for this month.", "MONTHLY CREDIT RENEWAL", "#20b486")
-        except Exception:
-            log.exception("monthly renewal email queue failed visitor=%s", visitor_id)
+    if not free_mode_enabled():
+        if account.month_key != month:
+            account.month_key = month
+            account.free_credits = monthly_free
+            account.updated_at = now
     return account
-
 
 def credit_balance(account):
     if bool(getattr(account, "unlimited", False)):
