@@ -1707,6 +1707,36 @@ def telegram_mt_status(request: Request, vexdou_visitor: str | None = Cookie(def
     finally:
         db.close()
 
+def telegram_login_error_detail(exc: Exception) -> str:
+    """Return a useful Telegram login error without exposing secrets."""
+    name = type(exc).__name__
+    raw = str(exc).strip()
+    known = {
+        "ApiIdInvalidError": "API_ID_INVALID: TELEGRAM_API_ID is invalid. Get your app credentials from my.telegram.org.",
+        "ApiIdPublishedFloodError": "API_ID_PUBLISHED_FLOOD: this API ID has been publicly exposed/abused. Create/use your own API ID from my.telegram.org.",
+        "PhoneNumberInvalidError": "PHONE_NUMBER_INVALID: check the phone number and use international format, e.g. +252... .",
+        "PhoneNumberFloodError": "PHONE_NUMBER_FLOOD: Telegram temporarily blocked more login-code requests for this number. Wait and try again later.",
+        "PhonePasswordFloodError": "PHONE_PASSWORD_FLOOD: too many login attempts. Wait and try again later.",
+        "PhoneNumberBannedError": "PHONE_NUMBER_BANNED: Telegram reports this phone number is banned.",
+        "PhoneNumberAppSignupForbiddenError": "PHONE_NUMBER_APP_SIGNUP_FORBIDDEN: this app cannot use that phone number for signup/login.",
+        "SmsCodeCreateFailedError": "SMS_CODE_CREATE_FAILED: Telegram could not create a verification code. Try again later.",
+        "AuthRestartError": "AUTH_RESTART: Telegram asked the authorization flow to restart. Please request a new code.",
+        "UpdateAppToLoginError": "UPDATE_APP_TO_LOGIN: Telegram requires an updated client/API flow.",
+        "FloodWaitError": f"FLOOD_WAIT: Telegram asked the app to wait before trying again. {raw}",
+    }
+    if name in known:
+        return known[name]
+    if name in {"ValueError", "TypeError"} and raw:
+        return f"{name}: {raw}"
+    # Telethon errors normally expose a safe class name; keep the raw message only
+    # when it contains no obvious credential material.
+    safe = raw[:300] if raw else "Unknown Telegram error."
+    for secret in (os.getenv("TELEGRAM_API_HASH", ""), os.getenv("TELEGRAM_BOT_TOKEN", ""), os.getenv("TELEGRAM_SESSION_SECRET", "")):
+        if secret:
+            safe = safe.replace(secret, "[REDACTED]")
+    return f"{name}: {safe}"
+
+
 @app.post("/api/telegram/mt/send-code")
 def telegram_mt_send_code(data: TelegramPhoneRequest, request: Request, vexdou_visitor: str | None = Cookie(default=None)):
     if not telegram_mtproto_configured():
@@ -1725,8 +1755,10 @@ def telegram_mt_send_code(data: TelegramPhoneRequest, request: Request, vexdou_v
         db.commit()
         return {"ok": True, "code_sent": True}
     except Exception as exc:
-        db.rollback(); log.warning("Telegram send code failed: %s", exc)
-        raise HTTPException(400, "Telegram could not send the login code.")
+        db.rollback()
+        detail = telegram_login_error_detail(exc)
+        log.warning("Telegram send code failed: %s", detail)
+        raise HTTPException(400, detail)
     finally:
         db.close()
 
