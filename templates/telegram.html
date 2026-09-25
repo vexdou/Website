@@ -1,0 +1,308 @@
+<!doctype html>
+
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#070912">
+<meta name="description" content="Sign in to QuickDL with Telegram">
+
+<title>QuickDL — Telegram Login</title>
+
+<style>
+    :root {
+        --bg: #070912;
+        --card: #0d111c;
+        --line: #242d41;
+        --text: #f8faff;
+        --muted: #929cb0;
+        --accent: #8b7cff;
+        --success: #28d49a;
+    }
+
+    * {
+        box-sizing: border-box;
+    }
+
+    body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+
+        background:
+            radial-gradient(
+                700px 400px at 50% -100px,
+                rgba(139,124,255,.25),
+                transparent 70%
+            ),
+            var(--bg);
+
+        color: var(--text);
+        font-family:
+            Inter,
+            ui-sans-serif,
+            system-ui,
+            -apple-system,
+            BlinkMacSystemFont,
+            "Segoe UI",
+            sans-serif;
+    }
+
+    .card {
+        width: min(420px, 100%);
+        padding: 34px 28px;
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        background: rgba(13,17,28,.94);
+        box-shadow: 0 25px 80px rgba(0,0,0,.35);
+        text-align: center;
+    }
+
+    .logo {
+        width: 58px;
+        height: 58px;
+        margin: 0 auto 18px;
+
+        display: grid;
+        place-items: center;
+
+        border-radius: 17px;
+
+        background:
+            linear-gradient(
+                135deg,
+                #7c6cff,
+                #a855f7
+            );
+
+        color: white;
+        font-size: 27px;
+        font-weight: 950;
+    }
+
+    h1 {
+        margin: 0;
+        font-size: 27px;
+        letter-spacing: -1px;
+    }
+
+    .subtitle {
+        margin: 10px 0 27px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.6;
+    }
+
+    .telegram-login {
+        display: flex;
+        justify-content: center;
+        min-height: 48px;
+    }
+
+    .success {
+        margin-top: 24px;
+        padding: 18px;
+
+        border: 1px solid rgba(40,212,154,.25);
+        border-radius: 17px;
+
+        background: rgba(40,212,154,.07);
+
+        text-align: left;
+    }
+
+    .success-title {
+        color: var(--success);
+        font-size: 13px;
+        font-weight: 900;
+        margin-bottom: 12px;
+    }
+
+    .profile {
+        display: grid;
+        gap: 7px;
+        font-size: 12px;
+    }
+
+    .profile-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 15px;
+    }
+
+    .profile-row span:first-child {
+        color: var(--muted);
+    }
+
+    .profile-row span:last-child {
+        text-align: right;
+        word-break: break-word;
+    }
+
+    .photo {
+        width: 55px;
+        height: 55px;
+        border-radius: 50%;
+        object-fit: cover;
+        margin-bottom: 12px;
+    }
+
+    .back {
+        display: inline-block;
+        margin-top: 22px;
+        color: var(--muted);
+        font-size: 11px;
+        text-decoration: none;
+    }
+
+    .back:hover {
+        color: var(--text);
+    }
+
+    .error {
+        margin-top: 18px;
+        color: #ff7d92;
+        font-size: 12px;
+    }
+
+    .hidden {
+        display: none;
+    }
+</style>
+
+</head><body><div class="card"><div class="logo">Q</div>
+
+<h1>Sign in to QuickDL</h1>
+
+<p class="subtitle">
+    Use your Telegram account to securely sign in to QuickDL.
+</p>
+
+<div
+    id="telegram-login"
+    class="telegram-login"
+></div>
+
+<div id="success" class="success hidden">
+
+    <div class="success-title">
+        ✓ Telegram login successful
+    </div>
+
+    <div id="photo-container"></div>
+
+    <div class="profile">
+
+        <div class="profile-row">
+            <span>ID</span>
+            <span id="user-id">—</span>
+        </div>
+
+        <div class="profile-row">
+            <span>First Name</span>
+            <span id="first-name">—</span>
+        </div>
+
+        <div class="profile-row">
+            <span>Username</span>
+            <span id="username">—</span>
+        </div>
+
+    </div>
+
+</div>
+
+<div id="error" class="error hidden"></div>
+
+<a href="/" class="back">
+    ← Back to QuickDL
+</a>
+
+</div><script>
+    /*
+     * Telegram Login Widget
+     *
+     * IMPORTANT:
+     * The bot username must match the bot linked to
+     * quickdl.site through BotFather.
+     */
+
+    window.onTelegramAuth = async function(user) {
+
+        const errorBox = document.getElementById("error");
+        const successBox = document.getElementById("success");
+
+        errorBox.classList.add("hidden");
+
+        try {
+
+            const response = await fetch("/api/auth/telegram", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                credentials: "same-origin",
+                body: JSON.stringify(user)
+            });
+
+            const data = await response.json();
+
+            if (!response.ok || !data.ok) {
+                throw new Error(
+                    data.detail ||
+                    data.message ||
+                    "Telegram authentication failed."
+                );
+            }
+
+            document.getElementById("user-id").textContent =
+                data.user.id;
+
+            document.getElementById("first-name").textContent =
+                data.user.first_name || "—";
+
+            document.getElementById("username").textContent =
+                data.user.username
+                    ? "@" + data.user.username
+                    : "—";
+
+            if (data.user.photo_url) {
+                document.getElementById("photo-container").innerHTML =
+                    `<img class="photo"
+                          src="${escapeHtml(data.user.photo_url)}"
+                          alt="Telegram profile">`;
+            }
+
+            successBox.classList.remove("hidden");
+
+        } catch (error) {
+
+            errorBox.textContent =
+                error.message || "Login failed.";
+
+            errorBox.classList.remove("hidden");
+        }
+    };
+
+
+    function escapeHtml(value) {
+        return String(value)
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;")
+            .replaceAll("'", "&#039;");
+    }
+</script><!-- Official Telegram Login Widget --><script
+    async
+    src="https://telegram.org/js/telegram-widget.js?22"
+    data-telegram-login="Antartickgaaf_bot"
+    data-size="large"
+    data-userpic="true"
+    data-radius="12"
+    data-request-access="write"
+    data-onauth="onTelegramAuth(user)"
+></script></body>
+</html>
