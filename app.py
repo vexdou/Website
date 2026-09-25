@@ -14,8 +14,9 @@ try:
 except Exception:
     curl_requests = None
 from html import unescape
-from fastapi import FastAPI, HTTPException, Cookie, Request, Header
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+from fastapi import FastAPI, HTTPException, Cookie, Request, Header, Depends
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, RedirectResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy import create_engine, String, Text, Integer, DateTime, select, update, delete, func
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -86,6 +87,16 @@ class CreditAccount(Base):
     google_linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     google_welcome_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     welcome_email_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    telegram_id: Mapped[str | None] = mapped_column(String(32), unique=True, nullable=True, index=True)
+    telegram_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    telegram_first_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    telegram_last_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    telegram_photo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    telegram_auth_date: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    telegram_linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    telegram_broadcast_opt_in: Mapped[bool] = mapped_column(Boolean, default=False)
+    telegram_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    telegram_last_broadcast_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     email: Mapped[str | None] = mapped_column(String(320), nullable=True, index=True)
     auth_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -162,6 +173,16 @@ def migrate_credit_columns():
                 ("credit_accounts", "google_linked_at", "TIMESTAMPTZ"),
                 ("credit_accounts", "google_welcome_sent_at", "TIMESTAMPTZ"),
                 ("credit_accounts", "welcome_email_sent_at", "TIMESTAMPTZ"),
+                ("credit_accounts", "telegram_id", "VARCHAR(32)"),
+                ("credit_accounts", "telegram_username", "VARCHAR(255)"),
+                ("credit_accounts", "telegram_first_name", "VARCHAR(255)"),
+                ("credit_accounts", "telegram_last_name", "VARCHAR(255)"),
+                ("credit_accounts", "telegram_photo_url", "TEXT"),
+                ("credit_accounts", "telegram_auth_date", "BIGINT"),
+                ("credit_accounts", "telegram_linked_at", "TIMESTAMPTZ"),
+                ("credit_accounts", "telegram_broadcast_opt_in", "BOOLEAN NOT NULL DEFAULT FALSE"),
+                ("credit_accounts", "telegram_consent_at", "TIMESTAMPTZ"),
+                ("credit_accounts", "telegram_last_broadcast_at", "TIMESTAMPTZ"),
                 ("credit_accounts", "email", "VARCHAR(320)"),
                 ("credit_accounts", "auth_name", "VARCHAR(200)"),
                 ("credit_accounts", "password_hash", "TEXT"),
@@ -206,6 +227,7 @@ def migrate_credit_columns():
                 "CREATE INDEX IF NOT EXISTS ix_credit_transactions_visitor_id ON credit_transactions(visitor_id)",
                 "CREATE INDEX IF NOT EXISTS ix_paypal_orders_visitor_id ON paypal_orders(visitor_id)",
                 "CREATE INDEX IF NOT EXISTS ix_credit_accounts_email ON credit_accounts(email)",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_credit_accounts_telegram_id ON credit_accounts(telegram_id) WHERE telegram_id IS NOT NULL",
             ]:
                 try:
                     with engine.begin() as conn: conn.execute(text(stmt))
@@ -213,7 +235,7 @@ def migrate_credit_columns():
         elif dialect == "sqlite":
             with engine.begin() as conn:
                 for table, fields in {
-                    "credit_accounts": {"visitor_id":"TEXT", "user_code":"TEXT", "free_credits":"INTEGER NOT NULL DEFAULT 50", "purchased_credits":"INTEGER NOT NULL DEFAULT 0", "month_key":"TEXT NOT NULL DEFAULT ''", "created_at":"DATETIME", "updated_at":"DATETIME", "unlimited":"INTEGER NOT NULL DEFAULT 0", "google_sub":"TEXT", "google_email":"TEXT", "google_name":"TEXT", "google_picture":"TEXT", "google_linked_at":"DATETIME", "google_welcome_sent_at":"DATETIME", "welcome_email_sent_at":"DATETIME", "email":"TEXT", "auth_name":"TEXT", "password_hash":"TEXT", "email_verified":"INTEGER NOT NULL DEFAULT 0", "email_code_hash":"TEXT", "email_code_expires_at":"DATETIME", "reset_code_hash":"TEXT", "reset_code_expires_at":"DATETIME"},
+                    "credit_accounts": {"visitor_id":"TEXT", "user_code":"TEXT", "free_credits":"INTEGER NOT NULL DEFAULT 50", "purchased_credits":"INTEGER NOT NULL DEFAULT 0", "month_key":"TEXT NOT NULL DEFAULT ''", "created_at":"DATETIME", "updated_at":"DATETIME", "unlimited":"INTEGER NOT NULL DEFAULT 0", "google_sub":"TEXT", "google_email":"TEXT", "google_name":"TEXT", "google_picture":"TEXT", "google_linked_at":"DATETIME", "google_welcome_sent_at":"DATETIME", "welcome_email_sent_at":"DATETIME", "telegram_id":"TEXT", "telegram_username":"TEXT", "telegram_first_name":"TEXT", "telegram_last_name":"TEXT", "telegram_photo_url":"TEXT", "telegram_auth_date":"INTEGER", "telegram_linked_at":"DATETIME", "telegram_broadcast_opt_in":"INTEGER NOT NULL DEFAULT 0", "telegram_consent_at":"DATETIME", "telegram_last_broadcast_at":"DATETIME", "email":"TEXT", "auth_name":"TEXT", "password_hash":"TEXT", "email_verified":"INTEGER NOT NULL DEFAULT 0", "email_code_hash":"TEXT", "email_code_expires_at":"DATETIME", "reset_code_hash":"TEXT", "reset_code_expires_at":"DATETIME"},
                     "credit_transactions": {"visitor_id":"TEXT", "tx_type":"TEXT DEFAULT 'adjustment'", "credits":"INTEGER NOT NULL DEFAULT 0", "amount":"TEXT", "currency":"TEXT", "package_id":"TEXT", "paypal_order_id":"TEXT", "paypal_capture_id":"TEXT", "status":"TEXT DEFAULT 'completed'", "note":"TEXT", "created_at":"DATETIME"},
                     "paypal_orders": {"order_id":"TEXT", "visitor_id":"TEXT", "package_id":"TEXT", "credits":"INTEGER DEFAULT 0", "amount":"TEXT DEFAULT '0.00'", "currency":"TEXT DEFAULT 'USD'", "status":"TEXT DEFAULT 'created'", "capture_id":"TEXT", "created_at":"DATETIME", "captured_at":"DATETIME"},
                 }.items():
@@ -270,6 +292,12 @@ PAYPAL_CURRENCY = os.getenv("PAYPAL_CURRENCY", "USD").strip().upper()
 PAYPAL_DOMAIN = os.getenv("PAYPAL_DOMAIN", "").strip()
 PAYPAL_WEBHOOK_ID = os.getenv("PAYPAL_WEBHOOK_ID", "").strip()
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_AUTH_MAX_AGE = max(60, int(os.getenv("TELEGRAM_AUTH_MAX_AGE", "600")))
+TELEGRAM_BOT_USERNAME = "Antartickgaaf_bot"
+TELEGRAM_ADMIN_PASSWORD = os.getenv("TELEGRAM_ADMIN_PASSWORD", "").strip()
+TELEGRAM_BROADCAST_DELAY = max(0.05, float(os.getenv("TELEGRAM_BROADCAST_DELAY", "0.12")))
+telegram_admin_security = HTTPBasic()
 SMTP_HOST = os.getenv("SMTP_HOST", "mail.spacemail.com").strip()
 SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
 SMTP_USER = os.getenv("SMTP_USER", os.getenv("SPACEMAIL_USER", "support@quickdl.site")).strip()
@@ -454,7 +482,10 @@ def account_payload(visitor_id):
                 log.exception("account video-cost setting read failed; using default")
                 video_cost = max(0, VIDEO_CREDIT_COST)
             db.commit()
-            return {"visitor_id": visitor_id, "user_code": account.user_code, "free_credits": int(account.free_credits or 0), "purchased_credits": int(account.purchased_credits or 0), "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": monthly_free, "video_cost": video_cost, "month": account.month_key, "google": bool(account.google_sub), "google_email": account.google_email, "google_name": account.google_name, "google_picture": account.google_picture, "email": account.email, "email_verified": bool(getattr(account, "email_verified", False)), "auth_name": account.auth_name, "authenticated": bool(account.google_sub or account.email_verified), "display_name": account.google_name or account.auth_name or account.google_email or account.email, "welcome_email_sent": bool(getattr(account, "welcome_email_sent_at", None) or getattr(account, "google_welcome_sent_at", None))}
+            telegram_authenticated = bool(getattr(account, "telegram_id", None))
+            authenticated = bool(account.google_sub or account.email_verified or telegram_authenticated)
+            display_name = (account.telegram_first_name or account.telegram_username or account.google_name or account.auth_name or account.google_email or account.email)
+            return {"visitor_id": visitor_id, "user_code": account.user_code, "free_credits": int(account.free_credits or 0), "purchased_credits": int(account.purchased_credits or 0), "credits": credit_balance(account), "unlimited": bool(getattr(account, "unlimited", False)), "monthly_free": monthly_free, "video_cost": video_cost, "month": account.month_key, "google": bool(account.google_sub), "google_email": account.google_email, "google_name": account.google_name, "google_picture": account.google_picture, "telegram": telegram_authenticated, "telegram_id": account.telegram_id, "telegram_username": account.telegram_username, "telegram_first_name": account.telegram_first_name, "telegram_last_name": account.telegram_last_name, "telegram_photo_url": account.telegram_photo_url, "telegram_broadcast_opt_in": bool(getattr(account, "telegram_broadcast_opt_in", False)), "telegram_consent_at": account.telegram_consent_at.isoformat() if getattr(account, "telegram_consent_at", None) else None, "email": account.email, "email_verified": bool(getattr(account, "email_verified", False)), "auth_name": account.auth_name, "authenticated": authenticated, "display_name": display_name, "welcome_email_sent": bool(getattr(account, "welcome_email_sent_at", None) or getattr(account, "google_welcome_sent_at", None))}
         except Exception as exc:
             last_exc = exc
             try: db.rollback()
@@ -1404,11 +1435,212 @@ def public_diagnostics():
     finally:
         db.close()
 
+def verify_telegram_auth(auth_data: dict) -> bool:
+    """Verify the legacy Telegram Login Widget payload using Telegram's HMAC rules."""
+    if not TELEGRAM_BOT_TOKEN:
+        return False
+    received_hash = str(auth_data.get("hash") or "").strip().lower()
+    if not received_hash:
+        return False
+    data_check = []
+    for key, value in sorted(auth_data.items()):
+        if key == "hash" or value is None:
+            continue
+        data_check.append(f"{key}={value}")
+    data_check_string = "\n".join(data_check)
+    secret_key = hashlib.sha256(TELEGRAM_BOT_TOKEN.encode("utf-8")).digest()
+    calculated_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(calculated_hash, received_hash):
+        return False
+    try:
+        auth_date = int(auth_data.get("auth_date") or 0)
+    except (TypeError, ValueError):
+        return False
+    now = int(time.time())
+    if auth_date <= 0 or auth_date > now + 60 or now - auth_date > TELEGRAM_AUTH_MAX_AGE:
+        return False
+    return True
+
+@app.get("/telegram")
+def telegram_login_page():
+    return FileResponse(BASE / "templates" / "telegram.html", headers={"Cache-Control": "no-store"})
+
+@app.get("/telegram/callback")
+def telegram_callback(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
+    if not TELEGRAM_BOT_TOKEN:
+        return RedirectResponse("/telegram?error=config", status_code=303)
+    auth_data = dict(request.query_params)
+    if not verify_telegram_auth(auth_data):
+        return RedirectResponse("/telegram?error=invalid", status_code=303)
+
+    telegram_id = str(auth_data.get("id") or "").strip()
+    if not telegram_id.isdigit():
+        return RedirectResponse("/telegram?error=invalid", status_code=303)
+
+    current_visitor = _visitor_from(request, vexdou_visitor)
+    db = Session()
+    try:
+        account = db.scalar(select(CreditAccount).where(CreditAccount.telegram_id == telegram_id))
+        if account is None:
+            account = ensure_credit_account(db, current_visitor)
+            existing_telegram_id = str(account.telegram_id or "").strip()
+            if existing_telegram_id and existing_telegram_id != telegram_id:
+                return RedirectResponse("/telegram?error=account_conflict", status_code=303)
+        elif account.visitor_id != current_visitor:
+            # Telegram identity is authoritative: switch this browser to its existing account.
+            current_visitor = account.visitor_id
+
+        try:
+            auth_date = int(auth_data.get("auth_date") or 0)
+        except (TypeError, ValueError):
+            return RedirectResponse("/telegram?error=invalid", status_code=303)
+        stored_auth_date = int(account.telegram_auth_date or 0)
+        if stored_auth_date and auth_date < stored_auth_date:
+            return RedirectResponse("/telegram?error=stale", status_code=303)
+
+        account.telegram_id = telegram_id
+        account.telegram_username = str(auth_data.get("username") or "").strip() or None
+        account.telegram_first_name = str(auth_data.get("first_name") or "").strip() or None
+        account.telegram_last_name = str(auth_data.get("last_name") or "").strip() or None
+        account.telegram_photo_url = str(auth_data.get("photo_url") or "").strip() or None
+        account.telegram_auth_date = auth_date
+        if not account.telegram_linked_at:
+            account.telegram_linked_at = datetime.now(timezone.utc)
+        account.updated_at = datetime.now(timezone.utc)
+        db.add(account)
+        db.commit()
+    except Exception:
+        db.rollback()
+        log.exception("Telegram login failed")
+        return RedirectResponse("/telegram?error=server", status_code=303)
+    finally:
+        db.close()
+
+    response = RedirectResponse("/telegram?success=1", status_code=303)
+    _set_visitor_cookie(response, current_visitor)
+    return response
+
+
+def _telegram_admin(credentials: HTTPBasicCredentials = Depends(telegram_admin_security)):
+    if not TELEGRAM_ADMIN_PASSWORD:
+        raise HTTPException(503, "Telegram admin is not configured.")
+    valid_user = secrets.compare_digest(credentials.username, "admin")
+    valid_pass = secrets.compare_digest(credentials.password, TELEGRAM_ADMIN_PASSWORD)
+    if not (valid_user and valid_pass):
+        raise HTTPException(401, "Invalid admin credentials.", headers={"WWW-Authenticate": "Basic"})
+    return True
+
+def _telegram_bot_call(method: str, payload: dict):
+    if not TELEGRAM_BOT_TOKEN:
+        return False, {"description": "Telegram bot token is not configured."}
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}",
+            json=payload,
+            timeout=15,
+        )
+        data = r.json()
+        return bool(data.get("ok")), data
+    except Exception as exc:
+        log.warning("Telegram Bot API %s failed: %s", method, exc)
+        return False, {"description": "Telegram API request failed."}
+
+@app.post("/api/telegram/consent")
+def telegram_consent(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
+    """Opt-in for QuickDL direct messages via the QuickDL Telegram bot.
+
+    This does not grant the site access to the user's private chats or contacts.
+    The user must also start the bot so Telegram permits direct bot messages.
+    """
+    visitor = _visitor_from(request, vexdou_visitor)
+    db = Session()
+    try:
+        account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor))
+        if not account or not account.telegram_id:
+            raise HTTPException(400, "Login with Telegram first.")
+        ok, data = _telegram_bot_call("getChat", {"chat_id": int(account.telegram_id)})
+        if not ok:
+            raise HTTPException(400, "Please open @Antartickgaaf_bot and press Start first.")
+        account.telegram_broadcast_opt_in = True
+        account.telegram_consent_at = datetime.now(timezone.utc)
+        account.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        return {"ok": True, "message": "Consent saved. QuickDL may now send direct bot messages to you."}
+    finally:
+        db.close()
+
+@app.post("/api/telegram/consent/revoke")
+def telegram_consent_revoke(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
+    visitor = _visitor_from(request, vexdou_visitor)
+    db = Session()
+    try:
+        account = db.scalar(select(CreditAccount).where(CreditAccount.visitor_id == visitor))
+        if not account:
+            raise HTTPException(404, "Account not found.")
+        account.telegram_broadcast_opt_in = False
+        account.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        return {"ok": True}
+    finally:
+        db.close()
+
+@app.get("/telegram/admin", response_class=HTMLResponse)
+def telegram_admin_page(_: bool = Depends(_telegram_admin)):
+    return FileResponse(BASE / "templates" / "telegram_admin.html", headers={"Cache-Control": "no-store"})
+
+@app.get("/api/telegram/admin/stats")
+def telegram_admin_stats(_: bool = Depends(_telegram_admin)):
+    db = Session()
+    try:
+        total = int(db.scalar(select(func.count()).select_from(CreditAccount).where(CreditAccount.telegram_id.is_not(None))) or 0)
+        opted = int(db.scalar(select(func.count()).select_from(CreditAccount).where(CreditAccount.telegram_id.is_not(None), CreditAccount.telegram_broadcast_opt_in.is_(True))) or 0)
+        users = db.scalars(
+            select(CreditAccount).where(CreditAccount.telegram_id.is_not(None)).order_by(CreditAccount.updated_at.desc()).limit(500)
+        ).all()
+        return {"ok": True, "total_users": total, "opted_in": opted, "users": [
+            {"id": a.telegram_id, "username": a.telegram_username, "name": a.telegram_first_name or "", "opted_in": bool(a.telegram_broadcast_opt_in), "consent_at": a.telegram_consent_at.isoformat() if a.telegram_consent_at else None, "last_broadcast_at": a.telegram_last_broadcast_at.isoformat() if a.telegram_last_broadcast_at else None}
+            for a in users
+        ]}
+    finally:
+        db.close()
+
+class TelegramBroadcastRequest(BaseModel):
+    text: str
+    user_ids: list[str] | None = None
+
+@app.post("/api/telegram/admin/broadcast")
+def telegram_admin_broadcast(data: TelegramBroadcastRequest, _: bool = Depends(_telegram_admin)):
+    message = data.text.strip()
+    if not message:
+        raise HTTPException(400, "Message is required.")
+    if len(message) > 4096:
+        raise HTTPException(400, "Message is too long. Telegram allows up to 4096 characters.")
+    ids = {str(x).strip() for x in (data.user_ids or []) if str(x).strip().isdigit()}
+    db = Session()
+    sent = failed = 0
+    try:
+        q = select(CreditAccount).where(CreditAccount.telegram_id.is_not(None), CreditAccount.telegram_broadcast_opt_in.is_(True))
+        accounts = db.scalars(q).all()
+        if ids:
+            accounts = [a for a in accounts if str(a.telegram_id) in ids]
+        for account in accounts:
+            ok, result = _telegram_bot_call("sendMessage", {"chat_id": int(account.telegram_id), "text": message, "disable_web_page_preview": False})
+            if ok:
+                sent += 1
+                account.telegram_last_broadcast_at = datetime.now(timezone.utc)
+            else:
+                failed += 1
+            time.sleep(TELEGRAM_BROADCAST_DELAY)
+        db.commit()
+        return {"ok": True, "sent": sent, "failed": failed, "targeted": len(accounts)}
+    finally:
+        db.close()
+
 @app.get("/api/account")
 def api_account(request: Request, vexdou_visitor: str | None = Cookie(default=None)):
     visitor = _visitor_from(request, vexdou_visitor)
     if free_mode_enabled():
-        out = JSONResponse({"ok":True,"visitor_id":visitor,"user_code":None,"free_credits":0,"purchased_credits":0,"credits":None,"unlimited":True,"monthly_free":0,"video_cost":0,"google":False,"google_email":None,"google_name":None,"google_picture":None,"email":None,"email_verified":False,"auth_name":None,"authenticated":False,"display_name":"Guest","free_mode":True}, headers={"Cache-Control":"no-store"})
+        out = JSONResponse({"ok":True,"visitor_id":visitor,"user_code":None,"free_credits":0,"purchased_credits":0,"credits":None,"unlimited":True,"monthly_free":0,"video_cost":0,"google":False,"google_email":None,"google_name":None,"google_picture":None,"telegram":False,"telegram_id":None,"telegram_username":None,"telegram_first_name":None,"telegram_last_name":None,"telegram_photo_url":None,"telegram_broadcast_opt_in":False,"telegram_consent_at":None,"email":None,"email_verified":False,"auth_name":None,"authenticated":False,"display_name":"Guest","free_mode":True}, headers={"Cache-Control":"no-store"})
         _set_visitor_cookie(out, visitor)
         return out
     try:
