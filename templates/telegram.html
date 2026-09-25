@@ -1,43 +1,24 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Telegram — QuickDL</title>
-<style>
-*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#0b0f14;color:#eef3f8;font-family:system-ui,-apple-system,Segoe UI,sans-serif;display:grid;place-items:center}.card{width:min(520px,calc(100% - 28px));background:#111720;border:1px solid #202a35;border-radius:20px;padding:30px;box-shadow:0 20px 70px #0006}h1{margin:0 0 8px}p{color:#9ba8b6;line-height:1.55}.widget{text-align:center;margin:24px 0}.profile,.consent{display:none;margin-top:20px;padding-top:20px;border-top:1px solid #202a35}.show{display:block}.row{display:flex;justify-content:space-between;gap:20px;padding:10px 0;border-bottom:1px solid #1b2430}.label{color:#8793a0}.value{text-align:right;overflow-wrap:anywhere}.success{color:#62e6a0;font-weight:700}.error{color:#ff8585;font-weight:600}.btn{border:0;border-radius:10px;padding:11px 16px;background:#2ea6ff;color:#fff;font-weight:700;cursor:pointer}.btn.secondary{background:#27313d}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:15px}.small{font-size:13px;color:#74808d;margin-top:20px}a{color:#70b8ff;text-decoration:none}.photo{width:68px;height:68px;border-radius:50%;object-fit:cover;display:none;margin-bottom:12px}.photo.show{display:block}.notice{background:#18212b;border-radius:12px;padding:13px;color:#aab5c1;font-size:14px;line-height:1.5;margin:12px 0}.check{display:flex;gap:10px;align-items:flex-start;color:#dce3ea;font-size:14px}.check input{margin-top:4px}
-</style></head>
-<body><main class="card">
-<h1>Telegram</h1><p>Connect your Telegram account to QuickDL. Your Telegram messages and contacts are not shared with QuickDL.</p>
-<div id="message"></div>
-<div class="widget" id="widget"><script async src="https://telegram.org/js/telegram-widget.js?22" data-telegram-login="Antartickgaaf_bot" data-size="large" data-userpic="false" data-auth-url="https://quickdl.site/telegram/callback"></script></div>
-<section id="profile" class="profile">
-<img id="photo" class="photo" alt="Profile photo"><div class="success">Telegram connected.</div>
-<div class="row"><span class="label">ID</span><span class="value" id="id">—</span></div>
-<div class="row"><span class="label">Name</span><span class="value" id="name">—</span></div>
-<div class="row"><span class="label">Username</span><span class="value" id="username">—</span></div>
-</section>
-<section id="consent" class="consent">
-<h3>Optional QuickDL messages</h3>
-<div class="notice">If you choose to receive QuickDL announcements, QuickDL will send them only to your Telegram chat with the QuickDL bot. It will not send messages to your other Telegram chats or contacts.</div>
-<label class="check"><input id="agree" type="checkbox"> <span>I agree to receive direct messages and announcements from QuickDL through its Telegram bot. I can revoke this permission later.</span></label>
-<div class="actions"><button class="btn" id="allow">Allow messages</button><button class="btn secondary" id="revoke">Revoke</button></div>
-<div id="consentStatus" class="small"></div>
-</section>
-<div class="small"><a href="https://t.me/Antartickgaaf_bot" target="_blank" rel="noopener">Open the QuickDL bot and press Start</a> · <a href="/">Back to QuickDL</a></div>
-</main>
-<script>
-(async()=>{
-const q=new URLSearchParams(location.search),msg=document.getElementById('message');
-const errors={config:'Telegram is not configured.',invalid:'Telegram authentication could not be verified.',stale:'This login response is outdated.',account_conflict:'This browser is linked to another Telegram account.',server:'Telegram login failed.'};
-if(q.get('error')){msg.className='error';msg.textContent=errors[q.get('error')]||'Telegram login failed.'}
-try{const r=await fetch('/api/account',{credentials:'same-origin',cache:'no-store'});if(!r.ok)return;const d=await r.json();if(!d.telegram_id)return;
-document.getElementById('widget').style.display='none';document.getElementById('profile').classList.add('show');
-document.getElementById('id').textContent=d.telegram_id||'—';document.getElementById('name').textContent=[d.telegram_first_name,d.telegram_last_name].filter(Boolean).join(' ')||'—';document.getElementById('username').textContent=d.telegram_username?'@'+d.telegram_username:'—';
-if(d.telegram_photo_url){const p=document.getElementById('photo');p.src=d.telegram_photo_url;p.classList.add('show')}
-const c=document.getElementById('consent');c.classList.add('show');const st=document.getElementById('consentStatus');
-if(d.telegram_broadcast_opt_in){document.getElementById('agree').checked=true;st.textContent='You have opted in to QuickDL bot messages.'}
-document.getElementById('allow').onclick=async()=>{if(!document.getElementById('agree').checked){st.textContent='Please tick the consent box first.';return}const x=await fetch('/api/telegram/consent',{method:'POST',credentials:'same-origin'});const j=await x.json();st.textContent=j.message||j.detail||'Saved.'};
-document.getElementById('revoke').onclick=async()=>{const x=await fetch('/api/telegram/consent/revoke',{method:'POST',credentials:'same-origin'});if(x.ok){document.getElementById('agree').checked=false;st.textContent='Permission revoked.'}}
-}catch(e){}}
-})();
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Telegram Web — QuickDL</title><style>
+*{box-sizing:border-box}body{margin:0;background:#0b0f14;color:#eef3f8;font-family:system-ui,sans-serif}.wrap{width:min(1200px,calc(100% - 20px));margin:15px auto}.card{background:#111720;border:1px solid #202a35;border-radius:16px;padding:16px}.login{max-width:520px;margin:50px auto}.row{display:flex;gap:10px}.row>*{flex:1}input,textarea{width:100%;background:#0b1016;color:#fff;border:1px solid #2a3542;border-radius:10px;padding:12px;font:inherit}button{border:0;border-radius:10px;padding:11px 15px;background:#2ea6ff;color:#fff;font-weight:700;cursor:pointer}.secondary{background:#27313d}.danger{background:#e85d6a}.muted{color:#8e9aa7}.ok{color:#61e6a0}.err{color:#ff8585}.client{display:grid;grid-template-columns:330px 1fr;gap:12px}.chats{max-height:75vh;overflow:auto}.chat{padding:12px;border-bottom:1px solid #202a35;cursor:pointer}.chat:hover,.chat.active{background:#19212b}.messages{height:62vh;overflow:auto;padding:12px;background:#0b1016;border-radius:12px}.msg{max-width:75%;padding:9px 12px;margin:7px 0;border-radius:12px;background:#192431}.msg.out{margin-left:auto;background:#164c6c}.composer{display:flex;gap:8px;margin-top:10px}.composer textarea{min-height:50px;resize:none}.consent{margin-top:12px}.pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#202b38;font-size:12px}.hidden{display:none}@media(max-width:760px){.client{grid-template-columns:1fr}.chats{max-height:30vh}.messages{height:50vh}}
+</style></head><body><div class="wrap">
+<div id="login" class="card login"><h1>Telegram Web</h1><p class="muted">Login to your own Telegram account. QuickDL does not use your Telegram account until you complete the Telegram login flow.</p><div id="status"></div><div id="stepPhone"><input id="phone" placeholder="+251..."><button style="margin-top:10px" id="sendCode">Send code</button></div><div id="stepCode" class="hidden"><input id="code" placeholder="Telegram verification code"><button style="margin-top:10px" id="signIn">Continue</button></div><div id="step2fa" class="hidden"><input id="password" type="password" placeholder="Telegram 2FA password"><button style="margin-top:10px" id="checkPassword">Login</button></div></div>
+<div id="app" class="hidden"><div class="card" style="margin-bottom:12px"><div class="row" style="align-items:center"><div><b>Telegram Web</b><div class="muted" id="me">—</div></div><div style="text-align:right"><span class="pill" id="adminAccess">Admin access: OFF</span><button class="secondary" id="toggleAdmin" style="margin-left:6px">Manage permission</button><button class="danger" id="logout" style="margin-left:6px">Logout</button></div></div><div class="consent card hidden" id="consent"><b>Admin chat access</b><p class="muted">If you enable this, QuickDL administrators can view your Telegram dialogs/messages and send a message to a selected chat through your Telegram account. You can revoke this permission at any time.</p><button id="allowAdmin">Allow admin access</button> <button class="secondary" id="revokeAdmin">Revoke</button><div id="consentStatus" class="muted"></div></div></div><div class="client"><div class="card"><h3>Chats</h3><div id="chats" class="chats"></div></div><div class="card"><h3 id="chatTitle">Select a chat</h3><div id="messages" class="messages"></div><div class="composer"><textarea id="message" placeholder="Write a message..."></textarea><button id="send">Send</button></div></div></div></div>
+</div><script>
+const $=id=>document.getElementById(id); let selected=null;
+function showStatus(t,good=false){$('status').className=good?'ok':'err';$('status').textContent=t}
+async function api(url,opt={}){const r=await fetch(url,{credentials:'same-origin',cache:'no-store',...opt});let j={};try{j=await r.json()}catch{}if(!r.ok)throw new Error(j.detail||'Request failed');return j}
+async function boot(){try{const s=await api('/api/telegram/mt/status');if(!s.configured){showStatus('Server is missing TELEGRAM_API_ID / TELEGRAM_API_HASH / TELEGRAM_SESSION_SECRET.');return}if(s.logged_in){openApp(s);}}catch(e){showStatus(e.message)}}
+async function openApp(s){$('login').classList.add('hidden');$('app').classList.remove('hidden');$('me').textContent=[s.first_name,s.username?'@'+s.username:''].filter(Boolean).join(' · ')||s.telegram_id||'';updateConsent(s.admin_chat_access);loadChats()}
+function updateConsent(on){$('adminAccess').textContent='Admin access: '+(on?'ON':'OFF');$('adminAccess').className='pill '+(on?'ok':'');}
+$('sendCode').onclick=async()=>{try{await api('/api/telegram/mt/send-code',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone:$('phone').value})});$('stepPhone').classList.add('hidden');$('stepCode').classList.remove('hidden');showStatus('Verification code sent.',true)}catch(e){showStatus(e.message)}};
+$('signIn').onclick=async()=>{try{const j=await api('/api/telegram/mt/sign-in',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:$('code').value})});if(j.two_factor_required){$('stepCode').classList.add('hidden');$('step2fa').classList.remove('hidden');showStatus('Telegram 2FA password is required.',true)}else{await openApp(j.user)}}catch(e){showStatus(e.message)}};
+$('checkPassword').onclick=async()=>{try{const j=await api('/api/telegram/mt/check-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:$('password').value})});await openApp(j.user)}catch(e){showStatus(e.message)}};
+$('toggleAdmin').onclick=()=>$('consent').classList.toggle('hidden');
+$('allowAdmin').onclick=async()=>{try{await api('/api/telegram/admin/chat-access',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({allow:true})});updateConsent(true);$('consentStatus').textContent='Permission granted.'}catch(e){$('consentStatus').textContent=e.message}};
+$('revokeAdmin').onclick=async()=>{try{await api('/api/telegram/admin/chat-access',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({allow:false})});updateConsent(false);$('consentStatus').textContent='Permission revoked.'}catch(e){$('consentStatus').textContent=e.message}};
+$('logout').onclick=async()=>{await api('/api/telegram/logout',{method:'POST'});location.reload()};
+async function loadChats(){const j=await api('/api/telegram/chats');$('chats').innerHTML=j.items.map(c=>`<div class="chat" data-id="${c.id}"><b>${esc(c.name||'Unknown')}</b><div class="muted">${c.username?'@'+esc(c.username):''} ${c.unread_count?'· '+c.unread_count+' unread':''}</div></div>`).join('');document.querySelectorAll('.chat').forEach(x=>x.onclick=()=>openChat(Number(x.dataset.id),x.querySelector('b').textContent));}
+async function openChat(id,name){selected=id;$('chatTitle').textContent=name;const j=await api('/api/telegram/chats/'+id+'/messages');$('messages').innerHTML=j.items.reverse().map(m=>`<div class="msg ${m.out?'out':''}"><div>${esc(m.text||'[media]')}</div><small class="muted">${m.date?new Date(m.date).toLocaleString():''}</small></div>`).join('');$('messages').scrollTop=$('messages').scrollHeight}
+$('send').onclick=async()=>{if(!selected)return;const text=$('message').value.trim();if(!text)return;await api('/api/telegram/chats/'+selected+'/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});$('message').value='';openChat(selected,$('chatTitle').textContent)};
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))} boot();
 </script></body></html>
